@@ -1,0 +1,179 @@
+local Players = game:GetService("Players")
+local StarterPlayer = game:GetService("StarterPlayer")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local Network = ReplicatedStorage:WaitForChild("Network")
+local CharacterFolder = Network:WaitForChild("Character")
+local TakeStamina = CharacterFolder:WaitForChild("TakeStamina")
+
+-- Загрузка ModuleScript Building
+local BuildingModule = nil
+local function loadBuildingModule()
+    local Core = LocalPlayer.PlayerScripts:WaitForChild("Core", 5)
+    if not Core then
+        print("LocalPlayer.PlayerScripts.Core not found")
+        return false
+    end
+    local Building = Core:WaitForChild("Building", 5)
+    if not Building then
+        print("LocalPlayer.PlayerScripts.Core.Building not found")
+        return false
+    end
+    if not Building:IsA("ModuleScript") then
+        print("LocalPlayer.PlayerScripts.Core.Building is not a ModuleScript, found:", Building.ClassName)
+        return false
+    end
+    local success, result = pcall(function()
+        return require(Building)
+    end)
+    if success then
+        if result.checkModelPosition and result.placeModel and result.startModel then
+            BuildingModule = result
+            print("Building module loaded successfully from LocalPlayer.PlayerScripts.Core.Building")
+            return true
+        else
+            print("Building module loaded but required functions not found")
+            return false
+        end
+    else
+        print("Error loading Building module:", result)
+        return false
+    end
+end
+
+loadBuildingModule()
+
+-- Конфигурация
+local Config = {
+    NoStamina = {
+        Enabled = false
+    },
+    FreeBuild = {
+        Enabled = false
+    }
+}
+
+-- Кэш
+local Cache = {
+    Data = nil,
+    OriginalNamecall = nil,
+    OriginalCheckModelPosition = nil
+}
+
+-- Переменная для хранения notify
+local notify = print
+
+-- Переменная для хранения UI-элементов
+local uiElements = {}
+
+-- Функция для инициализации кэша
+local function initializeCache()
+    Cache.Data = LocalPlayer:WaitForChild("Data", 5)
+end
+
+-- Функция для перехвата TakeStamina
+local function hookTakeStamina()
+    if Config.NoStamina.Enabled and not Cache.OriginalNamecall then
+        Cache.OriginalNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local method = getnamecallmethod()
+            if self == TakeStamina and method == "FireServer" and Config.NoStamina.Enabled then
+                return
+            end
+            return Cache.OriginalNamecall(self, ...)
+        end)
+        notify("NoStamina", "TakeStamina hooked successfully", true)
+    elseif not Config.NoStamina.Enabled and Cache.OriginalNamecall then
+        hookmetamethod(game, "__namecall", Cache.OriginalNamecall)
+        Cache.OriginalNamecall = nil
+        notify("NoStamina", "TakeStamina unhooked", true)
+    end
+end
+
+-- Функция для патча FreeBuild
+local function hookFreeBuild()
+    if not BuildingModule then
+        notify("FreeBuild", "Building module not found in LocalPlayer.PlayerScripts.Core.Building", true)
+        return
+    end
+    if not BuildingModule.checkModelPosition or not BuildingModule.placeModel or not BuildingModule.startModel then
+        notify("FreeBuild", "Required functions not found in Building module", true)
+        return
+    end
+    if Config.FreeBuild.Enabled and not Cache.OriginalCheckModelPosition then
+        -- Сохраняем оригинальную функцию
+        Cache.OriginalCheckModelPosition = BuildingModule.checkModelPosition
+        -- Перезаписываем checkModelPosition и canPlace
+        BuildingModule.checkModelPosition = function(...)
+            notify("FreeBuild", "Bypassing checkModelPosition, allowing placement", true)
+            return true -- Обход всех клиентских проверок
+        end
+        BuildingModule.canPlace = true -- Всегда можно размещать
+        -- Запускаем цикл для поддержания состояния
+        task.spawn(function()
+            while Config.FreeBuild.Enabled do
+                pcall(function()
+                    BuildingModule.state = true
+                end)
+                task.wait(0.05)
+            end
+        end)
+        notify("FreeBuild", "FreeBuild enabled: checkModelPosition patched and state management started", true)
+    elseif not Config.FreeBuild.Enabled and Cache.OriginalCheckModelPosition then
+        -- Восстанавливаем оригинальную функцию
+        BuildingModule.checkModelPosition = Cache.OriginalCheckModelPosition
+        Cache.OriginalCheckModelPosition = nil
+        notify("FreeBuild", "FreeBuild disabled: checkModelPosition restored", true)
+    end
+end
+
+-- Основной цикл
+local function mainLoop()
+    while true do
+        task.wait(0.5)
+    end
+end
+
+-- Инициализация UI
+local function initializeUI(UI)
+    if UI.Tabs and UI.Tabs.LocalPlayer then
+        local noStaminaSection = UI.Tabs.LocalPlayer:Section({ Name = "NoStamina", Side = "Right" })
+        noStaminaSection:Header({ Name = "NoStamina" })
+        noStaminaSection:SubLabel({ Text = "Prevents all stamina consumption calls" })
+
+        uiElements.NoStaminaEnabled = noStaminaSection:Toggle({
+            Name = "Enabled",
+            Default = Config.NoStamina.Enabled,
+            Callback = function(value)
+                Config.NoStamina.Enabled = value
+                hookTakeStamina()
+                notify("NoStamina", "NoStamina " .. (value and "Enabled" or "Disabled"), true)
+            end
+        }, 'NoStaminaEnabled')
+
+        local freeBuildSection = UI.Tabs.LocalPlayer:Section({ Name = "FreeBuild", Side = "Left" })
+        freeBuildSection:Header({ Name = "FreeBuild" })
+        freeBuildSection:SubLabel({ Text = "Allows placing build items anywhere, bypassing client restrictions" })
+
+        uiElements.FreeBuildEnabled = freeBuildSection:Toggle({
+            Name = "Enabled",
+            Default = Config.FreeBuild.Enabled,
+            Callback = function(value)
+                Config.FreeBuild.Enabled = value
+                hookFreeBuild()
+                notify("FreeBuild", "FreeBuild " .. (value and "Enabled" or "Disabled"), true)
+            end
+        }, 'FreeBuildEnabled')
+    else
+        notify("Error", "LocalPlayer tab not found in UI.Tabs", true)
+    end
+end
+
+-- Инициализация скрипта
+local function init(UI, core, notif)
+    notify = notif or print
+    initializeCache()
+    initializeUI(UI)
+    task.spawn(mainLoop)
+end
+
+return { Init = init }
