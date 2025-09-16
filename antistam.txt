@@ -148,7 +148,7 @@ local function initializeUI(UI)
                 hookTakeStamina()
                 notify("NoStamina", "NoStamina " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'NoStaminaEnabled')
+        })
 
         local freeBuildSection = UI.Tabs.LocalPlayer:Section({ Name = "FreeBuild", Side = "Left" })
         freeBuildSection:Header({ Name = "FreeBuild" })
@@ -162,7 +162,7 @@ local function initializeUI(UI)
                 hookFreeBuild()
                 notify("FreeBuild", "FreeBuild " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'FreeBuildEnabled')
+        })
     else
         notify("Error", "LocalPlayer tab not found in UI.Tabs", true)
     end
