@@ -10,6 +10,7 @@ local ItemsFolder = Network:WaitForChild("Items")
 local ToolAction = ItemsFolder:WaitForChild("ToolAction")
 local MoveItem = ItemsFolder:WaitForChild("MoveItem")
 local MergeItems = ItemsFolder:WaitForChild("MergeItems")
+local DropItem = ItemsFolder:WaitForChild("DropItem") -- Добавлено
 local Items = ReplicatedStorage:WaitForChild("Items")
 local MeleeModule = require(ReplicatedStorage.Modules.ToolHandlers.Melee)
 local Camera = Workspace.CurrentCamera
@@ -41,7 +42,7 @@ local Config = {
         CacheUpdateInterval = 2.0,
         GridCellSize = 150,
         PositionUpdateThreshold = 5,
-        MaxCacheSize = 1000
+        MaxCacheSize = 500 -- Уменьшено
     },
     AutoLoot = {
         Enabled = false,
@@ -60,8 +61,13 @@ local Config = {
         UseFreeSlotWhileWaiting = true,
         ValidationDelay = 0.1,
         PositionUpdateThreshold = 5,
-        MaxCacheSize = 500,
-        CacheCleanupInterval = 30
+        MaxCacheSize = 200, -- Уменьшено
+        CacheCleanupInterval = 15 -- Уменьшено
+    },
+    AutoDrop = { -- Добавлена новая секция
+        Enabled = false,
+        CheckInterval = 1.0,
+        ItemsToDrop = {}
     }
 }
 
@@ -84,14 +90,20 @@ local VALID_RESOURCE_TYPES = {
 -- Функция для безопасного парсинга выбора редкостей сундуков
 local function parseLootCratesSelection(selection)
     if type(selection) == "table" then
-        -- Проверяем разные форматы данных от UI
         local result = {}
         
-        -- Формат: {"пример" = true, "Option 2" = false, "Option 3" = false}
+        -- Проверяем разные форматы данных от UI
         for key, value in pairs(selection) do
             if type(value) == "boolean" and value == true then
-                if key == "All" or key == "Common" or key == "Rare" or key == "Uncommon" then
+                -- Проверяем правильные названия сундуков
+                if key == "All" or key == "CommonLoot" or key == "RareLoot" or key == "UncommonLoot" then
                     table.insert(result, key)
+                elseif key == "Common" then
+                    table.insert(result, "CommonLoot")
+                elseif key == "Rare" then
+                    table.insert(result, "RareLoot")
+                elseif key == "Uncommon" then
+                    table.insert(result, "UncommonLoot")
                 end
             end
         end
@@ -100,8 +112,14 @@ local function parseLootCratesSelection(selection)
         if #result == 0 then
             for _, value in ipairs(selection) do
                 if type(value) == "string" then
-                    if value == "All" or value == "Common" or value == "Rare" or value == "Uncommon" then
+                    if value == "All" or value == "CommonLoot" or value == "RareLoot" or value == "UncommonLoot" then
                         table.insert(result, value)
+                    elseif value == "Common" then
+                        table.insert(result, "CommonLoot")
+                    elseif value == "Rare" then
+                        table.insert(result, "RareLoot")
+                    elseif value == "Uncommon" then
+                        table.insert(result, "UncommonLoot")
                     end
                 end
             end
@@ -113,7 +131,11 @@ local function parseLootCratesSelection(selection)
         
         return result
     elseif type(selection) == "string" then
-        return { selection }
+        if selection == "Common" then return { "CommonLoot" }
+        elseif selection == "Rare" then return { "RareLoot" }
+        elseif selection == "Uncommon" then return { "UncommonLoot" }
+        else return { selection }
+        end
     else
         return { "All" }
     end
@@ -122,24 +144,18 @@ end
 local function getLootTypes()
     local lootCrates = parseLootCratesSelection(Config.AutoLoot.LootCrates)
     
-    local lootTypes = {
-        CommonLoot = false,
-        RareLoot = false,
-        UncommonLoot = false
-    }
+    local lootTypes = {}
     
     for _, crate in ipairs(lootCrates) do
         if crate == "All" then
-            lootTypes.CommonLoot = true
-            lootTypes.RareLoot = true
-            lootTypes.UncommonLoot = true
+            -- Если выбран "All", включаем все типы
+            lootTypes["CommonLoot"] = true
+            lootTypes["RareLoot"] = true
+            lootTypes["UncommonLoot"] = true
             break
-        elseif crate == "Common" then
-            lootTypes.CommonLoot = true
-        elseif crate == "Rare" then
-            lootTypes.RareLoot = true
-        elseif crate == "Uncommon" then
-            lootTypes.UncommonLoot = true
+        else
+            -- Добавляем конкретный тип
+            lootTypes[crate] = true
         end
     end
     
@@ -171,7 +187,8 @@ local Cache = {
     InventoryCache = {},
     LastCacheCleanup = 0,
     LootCacheSize = 0,
-    ResourceCacheSize = 0
+    ResourceCacheSize = 0,
+    LastDropCheck = 0 -- Добавлено
 }
 
 local Highlights = {
@@ -190,33 +207,48 @@ local Core = nil
 local function cleanupOldCache()
     local currentTime = tick()
     
-    -- Очистка старых записей в кэше инвентаря
     if currentTime - Cache.LastCacheCleanup > Config.AutoLoot.CacheCleanupInterval then
         Cache.LastCacheCleanup = currentTime
         
+        local cleanupStartTime = tick()
+        local cleanedCount = 0
+        
         -- Очистка кэша инвентаря
         for key, data in pairs(Cache.InventoryCache) do
-            if currentTime - (Cache.InventoryTimestamps[data.folder] or 0) > 60 then -- 60 секунд
+            if currentTime - (Cache.InventoryTimestamps[data.folder] or 0) > 30 then -- 30 секунд
                 Cache.InventoryCache[key] = nil
+                cleanedCount = cleanedCount + 1
             end
         end
         
         -- Очистка устаревших предметов из лут-кэша
+        local lootRemoved = 0
         for lootModel, data in pairs(Cache.LootCache) do
-            if not lootModel.Parent then
+            if not lootModel.Parent or not lootModel:IsA("Model") then
                 removeLootFromGrid(lootModel)
                 removeHighlight(lootModel, "AutoLoot")
+                lootRemoved = lootRemoved + 1
+            elseif data.lastSeen and currentTime - data.lastSeen > 120 then -- 2 минуты
+                removeLootFromGrid(lootModel)
+                removeHighlight(lootModel, "AutoLoot")
+                lootRemoved = lootRemoved + 1
             end
         end
         
         -- Очистка устаревших ресурсов
+        local resourceRemoved = 0
         for key, cell in pairs(Cache.ResourceGrid) do
             for groupName, group in pairs(cell) do
                 for i = #group, 1, -1 do
                     local resource = group[i]
-                    if not resource.obj.Parent then
+                    if not resource.obj.Parent or not resource.obj:IsA("Model") then
                         table.remove(group, i)
                         Cache.ResourceCacheSize = Cache.ResourceCacheSize - 1
+                        resourceRemoved = resourceRemoved + 1
+                    elseif resource.lastSeen and currentTime - resource.lastSeen > 120 then
+                        table.remove(group, i)
+                        Cache.ResourceCacheSize = Cache.ResourceCacheSize - 1
+                        resourceRemoved = resourceRemoved + 1
                     end
                 end
             end
@@ -227,15 +259,21 @@ local function cleanupOldCache()
         end
         
         -- Очистка подсветок для несуществующих объектов
+        local highlightsRemoved = 0
         for mode, highlightTable in pairs(Highlights) do
             for target, highlight in pairs(highlightTable) do
-                if not target.Parent then
+                if not target.Parent or not target:IsA("Model") then
                     removeHighlight(target, mode)
+                    highlightsRemoved = highlightsRemoved + 1
                 end
             end
         end
         
-        notify("Cache", "Cache cleanup completed", false)
+        local cleanupTime = tick() - cleanupStartTime
+        if cleanedCount > 0 or lootRemoved > 0 or resourceRemoved > 0 or highlightsRemoved > 0 then
+            notify("Cache", string.format("Cleanup: %d inventory, %d loot, %d resources, %d highlights (%.3fs)", 
+                cleanedCount, lootRemoved, resourceRemoved, highlightsRemoved, cleanupTime), false)
+        end
     end
 end
 
@@ -248,32 +286,37 @@ local function enforceCacheLimits()
         -- Находим самые старые записи
         local oldestEntries = {}
         for lootModel, data in pairs(Cache.LootCache) do
-            table.insert(oldestEntries, { model = lootModel, timestamp = data.lastSeen or 0 })
+            if lootModel ~= Cache.CurrentLoot then
+                table.insert(oldestEntries, { model = lootModel, timestamp = data.lastSeen or 0 })
+            end
         end
         
-        table.sort(oldestEntries, function(a, b)
-            return a.timestamp < b.timestamp
-        end)
-        
-        for i = 1, math.min(toRemove, #oldestEntries) do
-            local entry = oldestEntries[i]
-            if entry.model ~= Cache.CurrentLoot then
+        if #oldestEntries > 0 then
+            table.sort(oldestEntries, function(a, b)
+                return a.timestamp < b.timestamp
+            end)
+            
+            for i = 1, math.min(toRemove, #oldestEntries) do
+                local entry = oldestEntries[i]
                 removeLootFromGrid(entry.model)
                 removeHighlight(entry.model, "AutoLoot")
                 removed = removed + 1
             end
-        end
-        
-        Cache.LootCacheSize = Cache.LootCacheSize - removed
-        if removed > 0 then
-            notify("Cache", "Removed " .. removed .. " old loot entries from cache", false)
+            
+            Cache.LootCacheSize = Cache.LootCacheSize - removed
+            if removed > 0 then
+                notify("Cache", "Removed " .. removed .. " old loot entries from cache", false)
+            end
         end
     end
 end
 
 local function createHighlight(target, mode)
+    if not target or not target.Parent then return end
+    
     local highlightTable = mode == "AutoMine" and Highlights.AutoMine or mode == "AutoLoot" and Highlights.AutoLoot or Highlights.KillAura
     local config = mode == "AutoMine" and Config.AutoMine or mode == "AutoLoot" and Config.AutoLoot or Config.KillAura
+    
     if config.HighlightEnabled and not highlightTable[target] then
         local highlight = Instance.new("Highlight")
         highlight.Adornee = target
@@ -287,6 +330,8 @@ local function createHighlight(target, mode)
 end
 
 local function removeHighlight(target, mode)
+    if not target then return end
+    
     local highlightTable = mode == "AutoMine" and Highlights.AutoMine or mode == "AutoLoot" and Highlights.AutoLoot or Highlights.KillAura
     if highlightTable[target] then
         highlightTable[target]:Destroy()
@@ -402,7 +447,6 @@ local function isItemAllowed(itemName)
     if Config.AutoLoot.Mode == "None" then
         return true
     elseif Config.AutoLoot.Mode == "Exact" then
-        -- Обрабатываем разные форматы ItemsList
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
@@ -451,7 +495,7 @@ local function findExistingItemFolder(inventory, itemName, lootItem)
     local currentTime = tick()
     if currentTime - Cache.LastInventoryCheck < Config.AutoLoot.InventoryCheckInterval then
         local cachedResult = Cache.InventoryCache[itemName]
-        if cachedResult then
+        if cachedResult and cachedResult.folder.Parent then
             return cachedResult.folder, cachedResult.slot
         end
     end
@@ -495,56 +539,69 @@ end
 
 local function addLootToGrid(lootModel, pos, items)
     if not lootModel:IsA("Model") or not lootModel.Parent or not lootModel.PrimaryPart then return end
+    
+    local currentTime = tick()
     local key = getGridKey(pos, Config.AutoLoot.GridCellSize)
-    Cache.LootGrid[key] = Cache.LootGrid[key] or {}
-    Cache.LootGrid[key][lootModel] = { 
-        items = items, 
-        position = pos,
-        lastSeen = tick()
-    }
-    Cache.LootCache[lootModel] = { 
-        items = items, 
-        position = pos,
-        lastSeen = tick()
-    }
-    Cache.LootCacheSize = Cache.LootCacheSize + 1
+    
+    if not Cache.LootGrid[key] then
+        Cache.LootGrid[key] = {}
+    end
+    
+    if not Cache.LootGrid[key][lootModel] then
+        Cache.LootGrid[key][lootModel] = { 
+            items = items, 
+            position = pos,
+            lastSeen = currentTime
+        }
+        Cache.LootCache[lootModel] = Cache.LootGrid[key][lootModel]
+        Cache.LootCacheSize = Cache.LootCacheSize + 1
+    else
+        Cache.LootGrid[key][lootModel].lastSeen = currentTime
+        Cache.LootGrid[key][lootModel].items = items
+        Cache.LootCache[lootModel].lastSeen = currentTime
+        Cache.LootCache[lootModel].items = items
+    end
 end
 
 local function removeLootFromGrid(lootModel)
+    local removed = false
     for key, cell in pairs(Cache.LootGrid) do
         if cell[lootModel] then
             cell[lootModel] = nil
-            Cache.LootCacheSize = Cache.LootCacheSize - 1
+            removed = true
             if next(cell) == nil then
                 Cache.LootGrid[key] = nil
             end
         end
     end
-    Cache.LootCache[lootModel] = nil
+    if Cache.LootCache[lootModel] then
+        Cache.LootCache[lootModel] = nil
+        if removed then
+            Cache.LootCacheSize = math.max(0, Cache.LootCacheSize - 1)
+        end
+    end
 end
 
 local function initializeLootCache()
+    local startTime = tick()
+    
     Cache.LootGrid = {}
     Cache.LootCache = {}
     Cache.LootCacheSize = 0
-    local lootTypes = getLootTypes()
     
-    for _, lootModel in ipairs(Spawned:GetChildren()) do
+    local lootTypes = getLootTypes()
+    local spawnedChildren = Spawned:GetChildren()
+    local processed = 0
+    
+    for _, lootModel in ipairs(spawnedChildren) do
         if lootModel:IsA("Model") and lootModel.Parent and lootModel.PrimaryPart then
-            -- Проверяем тип сундука по имени
-            local isLootCrate = false
-            for lootType in pairs(lootTypes) do
-                if string.find(lootModel.Name, lootType) or lootModel.Name == lootType then
-                    isLootCrate = true
-                    break
-                end
-            end
-            
-            if isLootCrate then
+            -- Прямая проверка имени модели
+            if lootTypes[lootModel.Name] then
                 local inventoryFolder = lootModel:FindFirstChild("Inventory")
                 if inventoryFolder then
                     local items = {}
-                    for _, itemFolder in ipairs(inventoryFolder:GetChildren()) do
+                    local inventoryChildren = inventoryFolder:GetChildren()
+                    for _, itemFolder in ipairs(inventoryChildren) do
                         if isItemAllowed(itemFolder.Name) then
                             table.insert(items, itemFolder)
                         end
@@ -558,14 +615,31 @@ local function initializeLootCache()
                 end
             end
         end
+        processed = processed + 1
     end
+    
     Cache.CacheValid.Loot = true
     Cache.LastLootCacheUpdate = tick()
     
     enforceCacheLimits()
+    
+    local initTime = tick() - startTime
+    notify("Cache", string.format("Loot cache initialized: %d items, %d models (%.3fs)", 
+        Cache.LootCacheSize, processed, initTime), false)
 end
 
 local function findNearestLoot()
+    if not Config.AutoLoot.Enabled then
+        if Cache.CurrentLoot then
+            removeHighlight(Cache.CurrentLoot, "AutoLoot")
+            Cache.CurrentLoot = nil
+        end
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.AutoLootItemName = nil
+        end
+        return nil, nil, nil
+    end
+    
     Cache.Character = Cache.Character or LocalPlayer.Character
     if not Cache.Character then
         if Core and Core.TheApocalypse then
@@ -584,6 +658,7 @@ local function findNearestLoot()
     
     local currentTime = tick()
     local playerPos = Cache.RootPart.Position
+    
     if Cache.PlayerPosition and (currentTime - Cache.LastPositionUpdate < Config.AutoLoot.CheckInterval) then
         local dx = playerPos.X - Cache.PlayerPosition.X
         local dy = playerPos.Y - Cache.PlayerPosition.Y
@@ -608,53 +683,55 @@ local function findNearestLoot()
     local cellSize = Config.AutoLoot.GridCellSize
     local gridRadius = math.ceil(Config.AutoLoot.MaxDistance / cellSize) + 1
     local playerX, playerY, playerZ = math.floor(playerPos.X / cellSize), math.floor(playerPos.Y / cellSize), math.floor(playerPos.Z / cellSize)
-    local gridCells = {}
+    
+    local checkedCells = 0
+    local checkedModels = 0
+    
     for x = playerX - gridRadius, playerX + gridRadius do
         for y = playerY - gridRadius, playerY + gridRadius do
             for z = playerZ - gridRadius, playerZ + gridRadius do
-                table.insert(gridCells, x .. "," .. y .. "," .. z)
-            end
-        end
-    end
-    
-    for _, key in ipairs(gridCells) do
-        local cell = Cache.LootGrid[key]
-        if cell then
-            for lootModel, data in pairs(cell) do
-                if lootModel.Parent and lootModel.PrimaryPart then
-                    -- Обновляем время последнего визита
-                    data.lastSeen = currentTime
-                    Cache.LootCache[lootModel].lastSeen = currentTime
-                    
-                    local dx = playerPos.X - data.position.X
-                    local dy = playerPos.Y - data.position.Y
-                    local dz = playerPos.Z - data.position.Z
-                    local distSqr = dx * dx + dy * dy + dz * dz
-                    if distSqr <= maxDistanceSqr and distSqr < minDistanceSqr then
-                        for _, itemFolder in ipairs(data.items) do
-                            if itemFolder.Parent and itemFolder.Parent.Parent == lootModel then
-                                nearestLoot = itemFolder
-                                nearestItem = itemFolder.Name
-                                nearestModel = lootModel
-                                minDistanceSqr = distSqr
-                                break
+                local key = x .. "," .. y .. "," .. z
+                local cell = Cache.LootGrid[key]
+                if cell then
+                    checkedCells = checkedCells + 1
+                    for lootModel, data in pairs(cell) do
+                        checkedModels = checkedModels + 1
+                        if lootModel.Parent and lootModel.PrimaryPart then
+                            data.lastSeen = currentTime
+                            Cache.LootCache[lootModel].lastSeen = currentTime
+                            
+                            local dx = playerPos.X - data.position.X
+                            local dy = playerPos.Y - data.position.Y
+                            local dz = playerPos.Z - data.position.Z
+                            local distSqr = dx * dx + dy * dy + dz * dz
+                            
+                            if distSqr <= maxDistanceSqr and distSqr < minDistanceSqr then
+                                for _, itemFolder in ipairs(data.items) do
+                                    if itemFolder.Parent and itemFolder.Parent.Parent == lootModel then
+                                        nearestLoot = itemFolder
+                                        nearestItem = itemFolder.Name
+                                        nearestModel = lootModel
+                                        minDistanceSqr = distSqr
+                                        break
+                                    end
+                                end
                             end
+                        else
+                            removeLootFromGrid(lootModel)
+                            removeHighlight(lootModel, "AutoLoot")
                         end
                     end
-                else
-                    removeLootFromGrid(lootModel)
-                    removeHighlight(lootModel, "AutoLoot")
                 end
             end
         end
     end
     
-    if nearestLoot and Config.AutoLoot.Enabled then
+    if nearestLoot then
         if Cache.CurrentLoot and Cache.CurrentLoot ~= nearestModel then
             removeHighlight(Cache.CurrentLoot, "AutoLoot")
         end
         Cache.CurrentLoot = nearestModel
-        createHighlight(Cache.CurrentLoot, "AutoLoot")
+        createHighlight(nearestModel, "AutoLoot")
     elseif Cache.CurrentLoot then
         removeHighlight(Cache.CurrentLoot, "AutoLoot")
         Cache.CurrentLoot = nil
@@ -663,6 +740,7 @@ local function findNearestLoot()
     if Core and Core.TheApocalypse then
         Core.TheApocalypse.AutoLootItemName = nearestItem
     end
+    
     return nearestLoot, nearestItem, nearestModel
 end
 
@@ -707,7 +785,7 @@ local function removeResourceFromGrid(obj)
             for i = #gridCell[group], 1, -1 do
                 if gridCell[group][i].obj == obj then
                     table.remove(gridCell[group], i)
-                    Cache.ResourceCacheSize = Cache.ResourceCacheSize - 1
+                    Cache.ResourceCacheSize = math.max(0, Cache.ResourceCacheSize - 1)
                 end
             end
         end
@@ -739,14 +817,20 @@ local function processPendingResources()
     end
     Cache.LastCacheUpdate = currentTime
     
+    local processed = 0
     for i = #Cache.PendingResources, 1, -1 do
         local obj = Cache.PendingResources[i]
         if obj.Parent and obj.PrimaryPart then
             addResourceToGrid(obj, obj.PrimaryPart.Position)
+            processed = processed + 1
             table.remove(Cache.PendingResources, i)
         else
             table.remove(Cache.PendingResources, i)
         end
+    end
+    
+    if processed > 0 then
+        notify("Cache", "Processed " .. processed .. " pending resources", false)
     end
 end
 
@@ -760,7 +844,9 @@ local function checkZombieAlert()
     Cache.PlayerPosition = Cache.PlayerPosition or Cache.RootPart.Position
     
     local radiusSqr = Config.AutoMine.ZombieAlert_Radius ^ 2
-    for _, enemy in ipairs(Enemies:GetChildren()) do
+    local enemies = Enemies:GetChildren()
+    
+    for _, enemy in ipairs(enemies) do
         local humanoid = enemy:FindFirstChildOfClass("Humanoid")
         local root = enemy:FindFirstChild("HumanoidRootPart")
         if humanoid and root and humanoid.Health > 0 then
@@ -1112,6 +1198,57 @@ local function hitResource(target, item, useRate)
     end
 end
 
+-- Функция для выброса предметов
+local function dropItemsFromInventory()
+    if not Config.AutoDrop.Enabled then return end
+    
+    local currentTime = tick()
+    if currentTime - Cache.LastDropCheck < Config.AutoDrop.CheckInterval then
+        return
+    end
+    Cache.LastDropCheck = currentTime
+    
+    local inventory = LocalPlayer:WaitForChild("Inventory")
+    if not inventory then return end
+    
+    local droppedCount = 0
+    
+    -- Проверяем каждый выбранный предмет для дропа
+    for itemName, shouldDrop in pairs(Config.AutoDrop.ItemsToDrop) do
+        if shouldDrop then
+            -- Ищем предмет в инвентаре
+            for _, itemFolder in ipairs(inventory:GetChildren()) do
+                if getBaseItemName(itemFolder.Name) == getBaseItemName(itemName) then
+                    -- Выбрасываем предмет
+                    local args = {
+                        [1] = itemFolder
+                    }
+                    
+                    local success, errorMsg = pcall(function()
+                        DropItem:FireServer(unpack(args))
+                    end)
+                    
+                    if success then
+                        notify("AutoDrop", "Dropped: " .. itemFolder.Name, false)
+                        droppedCount = droppedCount + 1
+                        
+                        -- Ждем немного между дропами
+                        task.wait(0.1)
+                    else
+                        notify("AutoDrop", "Failed to drop " .. itemFolder.Name .. ": " .. tostring(errorMsg), false)
+                    end
+                    
+                    break
+                end
+            end
+        end
+    end
+    
+    if droppedCount > 0 then
+        notify("AutoDrop", "Dropped " .. droppedCount .. " items", true)
+    end
+end
+
 local function mainLoop()
     LocalPlayer.CharacterAdded:Connect(function(newCharacter)
         Cache.Character = newCharacter
@@ -1128,7 +1265,13 @@ local function mainLoop()
     end)
     
     local prevResource = nil
+    local frameCounter = 0
+    local lastFPSCheck = tick()
+    
     while true do
+        frameCounter = frameCounter + 1
+        local loopStartTime = tick()
+        
         Cache.Character = Cache.Character or LocalPlayer.Character
         if not Cache.Character then
             Cache.RootPart = nil
@@ -1145,7 +1288,29 @@ local function mainLoop()
             continue
         end
         
-        -- Очистка кэша
+        -- Очистка кэша (реже при низком FPS)
+        local currentTime = tick()
+        if currentTime - lastFPSCheck > 1 then
+            local fps = frameCounter / (currentTime - lastFPSCheck)
+            frameCounter = 0
+            lastFPSCheck = currentTime
+            
+            -- Адаптивная очистка кэша в зависимости от FPS
+            if fps < 30 then
+                Config.AutoLoot.CacheCleanupInterval = 10
+                Config.AutoLoot.MaxCacheSize = 100
+                Config.AutoMine.MaxCacheSize = 300
+            elseif fps < 45 then
+                Config.AutoLoot.CacheCleanupInterval = 15
+                Config.AutoLoot.MaxCacheSize = 150
+                Config.AutoMine.MaxCacheSize = 400
+            else
+                Config.AutoLoot.CacheCleanupInterval = 20
+                Config.AutoLoot.MaxCacheSize = 200
+                Config.AutoMine.MaxCacheSize = 500
+            end
+        end
+        
         cleanupOldCache()
         
         if Config.KillAura.Enabled then
@@ -1309,8 +1474,17 @@ local function mainLoop()
             end
         end
         
-        if not Config.KillAura.Enabled and not Config.AutoMine.Enabled and not Config.AutoLoot.Enabled then
+        -- Проверяем и выкидываем предметы
+        dropItemsFromInventory()
+        
+        -- Адаптивное ожидание для экономии ресурсов
+        local loopTime = tick() - loopStartTime
+        if loopTime < 0.01 then
             task.wait(0.03)
+        elseif loopTime < 0.05 then
+            task.wait(0.02)
+        else
+            task.wait(0.01)
         end
     end
 end
@@ -1322,34 +1496,31 @@ local function initializeItemCache()
 end
 
 Spawned.ChildAdded:Connect(function(child)
+    task.wait() -- Yield для предотвращения лагов
+    
     if child:IsA("Model") and child.Parent and child.PrimaryPart then
         local lootTypes = getLootTypes()
         
-        -- Проверяем, является ли это сундуком
-        local isLootCrate = false
-        for lootType in pairs(lootTypes) do
-            if string.find(child.Name, lootType) or child.Name == lootType then
-                isLootCrate = true
-                break
-            end
-        end
-        
-        if isLootCrate then
-            local inventoryFolder = child:FindFirstChild("Inventory")
-            if inventoryFolder then
-                local items = {}
-                for _, itemFolder in ipairs(inventoryFolder:GetChildren()) do
-                    if isItemAllowed(itemFolder.Name) then
-                        table.insert(items, itemFolder)
+        -- Прямая проверка имени модели
+        if lootTypes[child.Name] then
+            task.spawn(function()
+                task.wait(0.1) -- Небольшая задержка для инициализации
+                local inventoryFolder = child:FindFirstChild("Inventory")
+                if inventoryFolder then
+                    local items = {}
+                    for _, itemFolder in ipairs(inventoryFolder:GetChildren()) do
+                        if isItemAllowed(itemFolder.Name) then
+                            table.insert(items, itemFolder)
+                        end
+                    end
+                    if #items > 0 then
+                        addLootToGrid(child, child.PrimaryPart.Position, items)
+                        if Config.AutoLoot.Enabled then
+                            createHighlight(child, "AutoLoot")
+                        end
                     end
                 end
-                if #items > 0 then
-                    addLootToGrid(child, child.PrimaryPart.Position, items)
-                    if Config.AutoLoot.Enabled then
-                        createHighlight(child, "AutoLoot")
-                    end
-                end
-            end
+            end)
         else
             -- Если это не сундук, добавляем в ресурсы
             table.insert(Cache.PendingResources, child)
@@ -1666,10 +1837,11 @@ local function initializeUI(UI)
         })
         autoLootSection:SubLabel({ Text = "[ ⁉️ ] None: All items, Exact: Only selected, Exclude: All except selected" })
         
+        -- Исправлены названия сундуков
         uiElements.AutoLootLootCrates = autoLootSection:Dropdown({
             Name = "Loot Crates",
             Default = Config.AutoLoot.LootCrates,
-            Options = { "All", "Common", "Rare", "Uncommon" },
+            Options = { "All", "CommonLoot", "RareLoot", "UncommonLoot" },
             Search = true,
             Multi = true,
             Callback = function(value)
@@ -1700,6 +1872,54 @@ local function initializeUI(UI)
             end
         })
         autoLootSection:SubLabel({ Text = "[ ⁉️ ] Select items for Exact or Exclude mode" })
+        
+        -- Добавлена новая секция для AutoDrop
+        local autoDropSection = UI.Tabs.Main:Section({ Name = "AutoDrop", Side = "Left" })
+        autoDropSection:Header({ Name = "AutoDrop" })
+        autoDropSection:SubLabel({ Text = "Automatically drops selected items from inventory" })
+        
+        uiElements.AutoDropEnabled = autoDropSection:Toggle({
+            Name = "Enabled",
+            Default = Config.AutoDrop.Enabled,
+            Callback = function(value)
+                Config.AutoDrop.Enabled = value
+                notify("AutoDrop", "AutoDrop " .. (value and "Enabled" or "Disabled"), true)
+            end
+        })
+        
+        uiElements.AutoDropCheckInterval = autoDropSection:Slider({
+            Name = "Check Interval",
+            Minimum = 0.5,
+            Maximum = 5.0,
+            Default = Config.AutoDrop.CheckInterval,
+            Precision = 1,
+            Callback = function(value)
+                Config.AutoDrop.CheckInterval = value
+                notify("AutoDrop", "Check Interval set to: " .. value, false)
+            end
+        })
+        
+        -- Создаем список предметов для дропа
+        local dropItemOptions = {}
+        for _, item in ipairs(Items:GetChildren()) do
+            local itemConfig = getItemConfig(item.Name)
+            -- Можно дропать любые предметы
+            table.insert(dropItemOptions, item.Name)
+        end
+        table.sort(dropItemOptions)
+        
+        uiElements.AutoDropItemsList = autoDropSection:Dropdown({
+            Name = "Items to Drop",
+            Default = Config.AutoDrop.ItemsToDrop,
+            Options = dropItemOptions,
+            Search = true,
+            Multi = true,
+            Callback = function(value)
+                Config.AutoDrop.ItemsToDrop = value
+                notify("AutoDrop", "Items to Drop updated", false)
+            end
+        })
+        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Select items to automatically drop from inventory" })
         
         if UI.Tabs.Config then
             local configSection = UI.Tabs.Config:Section({ Name = "KillAura, AutoMine, AutoLoot Sync", Side = "Right" })
