@@ -66,7 +66,8 @@ local Config = {
         Enabled = false,
         CheckInterval = 1.0,
         ItemsToDrop = {},
-        OnlyAfterLoot = true
+        OnlyAutoLoot = true,
+        ExactModeSync = false
     }
 }
 
@@ -129,7 +130,7 @@ local notify = print
 
 local Core = nil
 
--- Функции для управления кэшем (исправлены утечки памяти)
+-- Функции для управления кэшем
 local function cleanupOldCache()
     if not Config.AutoLoot.Enabled and not Config.AutoMine.Enabled then
         return
@@ -140,14 +141,12 @@ local function cleanupOldCache()
     if currentTime - Cache.LastCacheCleanup > Config.AutoLoot.CacheCleanupInterval then
         Cache.LastCacheCleanup = currentTime
         
-        -- Очистка кэша инвентаря
         for key, data in pairs(Cache.InventoryCache) do
             if currentTime - (Cache.InventoryTimestamps[data.folder] or 0) > 30 then
                 Cache.InventoryCache[key] = nil
             end
         end
         
-        -- Очистка устаревших предметов из лут-кэша
         local lootToRemove = {}
         for lootModel, data in pairs(Cache.LootCache) do
             if not lootModel.Parent or not lootModel:IsA("Model") then
@@ -162,7 +161,6 @@ local function cleanupOldCache()
             removeHighlight(lootModel, "AutoLoot")
         end
         
-        -- Очистка устаревших ресурсов
         local resourcesRemoved = 0
         for key, cell in pairs(Cache.ResourceGrid) do
             for groupName, group in pairs(cell) do
@@ -179,13 +177,11 @@ local function cleanupOldCache()
                     end
                 end
             end
-            -- Удаляем пустые ячейки
             if next(cell.Trees) == nil and next(cell.Stones) == nil and next(cell.Ores) == nil then
                 Cache.ResourceGrid[key] = nil
             end
         end
         
-        -- Очистка подсветок для несуществующих объектов
         for mode, highlightTable in pairs(Highlights) do
             local toRemove = {}
             for target, highlight in pairs(highlightTable) do
@@ -1191,6 +1187,39 @@ local function hitResource(target, item, useRate)
     end
 end
 
+-- Функция проверки, должен ли предмет быть выброшен
+local function shouldDropItem(itemName)
+    local baseItemName = getBaseItemName(itemName)
+    
+    -- Если включена синхронизация с Exact режимом
+    if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
+        -- В режиме Exact: выкидываем предметы НЕ из списка
+        local itemsList = Config.AutoLoot.ItemsList
+        if type(itemsList) == "table" then
+            for item, enabled in pairs(itemsList) do
+                if (type(enabled) == "boolean" and enabled and baseItemName == item) or
+                   (type(enabled) == "string" and baseItemName == enabled) then
+                    return false -- Не выкидываем, так как предмет в списке Exact
+                end
+            end
+        end
+        return true -- Выкидываем, так как предмет не в списке Exact
+    end
+    
+    -- Обычная проверка по списку ItemsToDrop
+    local itemsToDrop = Config.AutoDrop.ItemsToDrop
+    if type(itemsToDrop) == "table" then
+        for item, shouldDrop in pairs(itemsToDrop) do
+            if (type(shouldDrop) == "boolean" and shouldDrop and baseItemName == item) or
+               (type(shouldDrop) == "string" and baseItemName == shouldDrop) then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
 local function dropItemsFromInventory()
     if not Config.AutoDrop.Enabled then return end
     
@@ -1200,8 +1229,8 @@ local function dropItemsFromInventory()
     end
     Cache.LastDropCheck = currentTime
     
-    -- Если включена опция OnlyAfterLoot, проверяем был ли недавно лут
-    if Config.AutoDrop.OnlyAfterLoot then
+    -- Если включена опция OnlyAutoLoot, проверяем был ли недавно лут
+    if Config.AutoDrop.OnlyAutoLoot then
         if not Cache.LastLootedItem or currentTime - Cache.LastLootedTime > 10 then
             return
         end
@@ -1210,22 +1239,24 @@ local function dropItemsFromInventory()
     local inventory = LocalPlayer:WaitForChild("Inventory")
     if not inventory then return end
     
-    for itemName, shouldDrop in pairs(Config.AutoDrop.ItemsToDrop) do
-        if shouldDrop then
-            for _, itemFolder in ipairs(inventory:GetChildren()) do
-                if getBaseItemName(itemFolder.Name) == getBaseItemName(itemName) then
-                    local args = {
-                        [1] = itemFolder
-                    }
-                    
-                    DropItem:FireServer(unpack(args))
-                    
-                    task.wait(0.05)
-                    
-                    break
-                end
-            end
+    -- Собираем все предметы для дропа
+    local itemsToDropNow = {}
+    
+    for _, itemFolder in ipairs(inventory:GetChildren()) do
+        local itemName = itemFolder.Name
+        if shouldDropItem(itemName) then
+            table.insert(itemsToDropNow, itemFolder)
         end
+    end
+    
+    -- Выкидываем собранные предметы
+    for _, itemFolder in ipairs(itemsToDropNow) do
+        local args = {
+            [1] = itemFolder
+        }
+        
+        DropItem:FireServer(unpack(args))
+        task.wait(0.05)
     end
 end
 
@@ -1818,12 +1849,21 @@ local function initializeUI(UI)
             end
         })
         
-        uiElements.AutoDropOnlyAfterLoot = autoDropSection:Toggle({
-            Name = "Only After AutoLoot",
-            Default = Config.AutoDrop.OnlyAfterLoot,
+        uiElements.AutoDropOnlyAutoLoot = autoDropSection:Toggle({
+            Name = "Only AutoLoot",
+            Default = Config.AutoDrop.OnlyAutoLoot,
             Callback = function(value)
-                Config.AutoDrop.OnlyAfterLoot = value
-                notify("AutoDrop", "Only After AutoLoot " .. (value and "Enabled" or "Disabled"), true)
+                Config.AutoDrop.OnlyAutoLoot = value
+                notify("AutoDrop", "Only AutoLoot " .. (value and "Enabled" or "Disabled"), true)
+            end
+        })
+        
+        uiElements.AutoDropExactModeSync = autoDropSection:Toggle({
+            Name = "Exact Mode Sync",
+            Default = Config.AutoDrop.ExactModeSync,
+            Callback = function(value)
+                Config.AutoDrop.ExactModeSync = value
+                notify("AutoDrop", "Exact Mode Sync " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
@@ -1851,6 +1891,8 @@ local function initializeUI(UI)
             end
         })
         autoDropSection:SubLabel({ Text = "[ ⁉️ ] Select items to automatically drop from inventory" })
+        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Only AutoLoot: Drop only after AutoLoot picks up items" })
+        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Exact Mode Sync: When AutoLoot is in Exact mode, drop items NOT in the Exact list" })
     end
 end
 
