@@ -118,6 +118,37 @@ local notify = print
 
 local Core = nil
 
+-- Функция для получения типов сундуков
+local function getLootTypes()
+    local lootTypes = {
+        CommonLoot = false,
+        RareLoot = false,
+        UncommonLoot = false
+    }
+    
+    -- Исправленная логика: теперь правильно работает с несколькими выбранными типами
+    if #Config.AutoLoot.LootCrates == 0 then
+        return lootTypes
+    end
+    
+    for _, crate in ipairs(Config.AutoLoot.LootCrates) do
+        if crate == "All" then
+            lootTypes.CommonLoot = true
+            lootTypes.RareLoot = true
+            lootTypes.UncommonLoot = true
+            break
+        elseif crate == "Common" then
+            lootTypes.CommonLoot = true
+        elseif crate == "Rare" then
+            lootTypes.RareLoot = true
+        elseif crate == "Uncommon" then
+            lootTypes.UncommonLoot = true
+        end
+    end
+    
+    return lootTypes
+end
+
 local function createHighlight(target, mode)
     local highlightTable = mode == "AutoMine" and Highlights.AutoMine or mode == "AutoLoot" and Highlights.AutoLoot or Highlights.KillAura
     local config = mode == "AutoMine" and Config.AutoMine or mode == "AutoLoot" and Config.AutoLoot or Config.KillAura
