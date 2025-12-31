@@ -56,13 +56,14 @@ local Config = {
         Mode = "None",
         LootCrates = { "All" },
         ItemsList = {},
-        ItemsToDrop = {}, -- Новый список для выбрасывания
+        ItemsToDrop = {}, -- Новый список предметов для выбрасывания
         ActionDelay = 0.5,
         UseFreeSlotWhileWaiting = true,
         ValidationDelay = 0.1,
         PositionUpdateThreshold = 5,
-        CleanupInterval = 30, -- Интервал очистки кэша
-        MaxLootCacheSize = 500 -- Максимальный размер кэша
+        CacheCleanupInterval = 10.0, -- Интервал очистки кэша
+        MaxCacheSize = 500, -- Максимальный размер кэша
+        DropItemsEnabled = false -- Включить выбрасывание предметов
     }
 }
 
@@ -82,44 +83,9 @@ local VALID_RESOURCE_TYPES = {
     Sandstone = true
 }
 
--- Функция для очистки кэша
-local function cleanupCache()
-    local currentTime = tick()
-    
-    -- Очистка LootCache
-    local removedLoot = 0
-    for lootModel, data in pairs(Cache.LootCache) do
-        if not lootModel.Parent or not lootModel:IsDescendantOf(Workspace) then
-            removeLootFromGrid(lootModel)
-            removedLoot = removedLoot + 1
-        end
-    end
-    
-    -- Очистка Highlights.AutoLoot
-    for target, highlight in pairs(Highlights.AutoLoot) do
-        if not target.Parent or not target:IsDescendantOf(Workspace) then
-            highlight:Destroy()
-            Highlights.AutoLoot[target] = nil
-        end
-    end
-    
-    -- Очистка InventoryCache
-    Cache.InventoryCache = {}
-    Cache.InventoryTimestamps = {}
-    
-    -- Если кэш слишком большой, сбросить его полностью
-    if table.getn(Cache.LootCache) > Config.AutoLoot.MaxLootCacheSize then
-        Cache.LootGrid = {}
-        Cache.LootCache = {}
-        Cache.CacheValid.Loot = false
-    end
-    
-    if removedLoot > 0 then
-        print("AutoLoot Cache Cleanup: Removed " .. removedLoot .. " invalid loot entries")
-    end
-    
-    Cache.LastCleanup = currentTime
-end
+-- Глобальные переменные для очистки кэша
+local lastCacheCleanup = tick()
+local droppedItemsCache = {} -- Кэш для отслеживания выброшенных предметов
 
 local function getLootTypes()
     local lootTypes = {
@@ -128,28 +94,24 @@ local function getLootTypes()
         UncommonLoot = false
     }
     
-    -- Исправлено: проверяем каждый тип отдельно
-    if table.find(Config.AutoLoot.LootCrates, "All") then
-        lootTypes.CommonLoot = true
-        lootTypes.RareLoot = true
-        lootTypes.UncommonLoot = true
-    else
-        for _, crate in ipairs(Config.AutoLoot.LootCrates) do
-            if crate == "Common" then
-                lootTypes.CommonLoot = true
-            elseif crate == "Rare" then
-                lootTypes.RareLoot = true
-            elseif crate == "Uncommon" then
-                lootTypes.UncommonLoot = true
-            end
-        end
+    -- Исправленная логика: теперь правильно работает с несколькими выбранными типами
+    if #Config.AutoLoot.LootCrates == 0 then
+        return lootTypes
     end
     
-    -- Если ни один тип не выбран, выбираем все (для обратной совместимости)
-    if not lootTypes.CommonLoot and not lootTypes.RareLoot and not lootTypes.UncommonLoot then
-        lootTypes.CommonLoot = true
-        lootTypes.RareLoot = true
-        lootTypes.UncommonLoot = true
+    for _, crate in ipairs(Config.AutoLoot.LootCrates) do
+        if crate == "All" then
+            lootTypes.CommonLoot = true
+            lootTypes.RareLoot = true
+            lootTypes.UncommonLoot = true
+            break
+        elseif crate == "Common" then
+            lootTypes.CommonLoot = true
+        elseif crate == "Rare" then
+            lootTypes.RareLoot = true
+        elseif crate == "Uncommon" then
+            lootTypes.UncommonLoot = true
+        end
     end
     
     return lootTypes
@@ -173,13 +135,12 @@ local Cache = {
     LastLootCheck = 0,
     LastLootCacheUpdate = 0,
     LastInventoryCheck = 0,
-    LastCleanup = 0,
     LootGrid = {},
     LootCache = {},
     ItemConfigs = {},
     InventoryTimestamps = {},
     InventoryCache = {},
-    ItemsToDropCache = {} -- Кэш для предметов, которые нужно выкинуть
+    ItemsToProcess = {} -- Кэш для предметов на обработку
 }
 
 local Highlights = {
@@ -194,51 +155,61 @@ local notify = print
 
 local Core = nil
 
--- Функция для выкидывания предмета
-local function dropItem(itemFolder)
-    if not itemFolder or not itemFolder.Parent then return false end
+-- Функция для очистки кэша
+local function cleanupCache()
+    local currentTime = tick()
     
-    local args = {
-        [1] = itemFolder
-    }
-    
-    local success = pcall(function()
-        DropItem:FireServer(unpack(args))
-    end)
-    
-    if success then
-        notify("AutoLoot", "Dropped item: " .. itemFolder.Name, false)
-    else
-        notify("AutoLoot", "Failed to drop item: " .. itemFolder.Name, false)
-    end
-    
-    return success
-end
-
--- Функция для проверки, нужно ли выкидывать предмет
-local function shouldDropItem(itemName)
-    local baseItemName = getBaseItemName(itemName)
-    return Config.AutoLoot.ItemsToDrop[baseItemName] == true
-end
-
--- Функция для выкидывания предметов из инвентаря
-local function dropItemsFromInventory()
-    local inventory = LocalPlayer:WaitForChild("Inventory")
-    if not inventory then return end
-    
-    local droppedCount = 0
-    for _, itemFolder in ipairs(inventory:GetChildren()) do
-        if shouldDropItem(itemFolder.Name) then
-            if dropItem(itemFolder) then
-                droppedCount = droppedCount + 1
-                task.wait(0.1) -- Небольшая задержка между выкидываниями
-            end
+    -- Очистка устаревших предметов из droppedItemsCache
+    for itemName, timestamp in pairs(droppedItemsCache) do
+        if currentTime - timestamp > 30 then -- Удаляем записи старше 30 секунд
+            droppedItemsCache[itemName] = nil
         end
     end
     
-    if droppedCount > 0 then
-        notify("AutoLoot", "Dropped " .. droppedCount .. " items from inventory", true)
+    -- Очистка устаревших записей в InventoryCache
+    for itemName, data in pairs(Cache.InventoryCache) do
+        if currentTime - Cache.LastInventoryCheck > 60 then
+            Cache.InventoryCache[itemName] = nil
+        end
     end
+    
+    -- Очистка устаревших предметов из LootCache
+    local lootToRemove = {}
+    for lootModel, data in pairs(Cache.LootCache) do
+        if not lootModel or not lootModel.Parent or lootModel.Parent ~= Spawned then
+            table.insert(lootToRemove, lootModel)
+        end
+    end
+    
+    for _, lootModel in ipairs(lootToRemove) do
+        removeLootFromGrid(lootModel)
+        removeHighlight(lootModel, "AutoLoot")
+    end
+    
+    -- Очистка устаревших предметов из LootGrid
+    for key, cell in pairs(Cache.LootGrid) do
+        local toRemove = {}
+        for lootModel, data in pairs(cell) do
+            if not lootModel or not lootModel.Parent or lootModel.Parent ~= Spawned then
+                table.insert(toRemove, lootModel)
+            end
+        end
+        
+        for _, lootModel in ipairs(toRemove) do
+            cell[lootModel] = nil
+        end
+        
+        if next(cell) == nil then
+            Cache.LootGrid[key] = nil
+        end
+    end
+    
+    -- Ограничение размера кэша
+    if #Cache.ItemsToProcess > Config.AutoLoot.MaxCacheSize then
+        table.remove(Cache.ItemsToProcess, 1)
+    end
+    
+    lastCacheCleanup = currentTime
 end
 
 local function createHighlight(target, mode)
@@ -278,6 +249,44 @@ local function clearAutoLootHighlights(currentLoot)
             removeHighlight(target, "AutoLoot")
         end
     end
+end
+
+-- Функция для выбрасывания предмета
+local function dropItem(itemFolder)
+    if not itemFolder or not itemFolder.Parent then
+        return false
+    end
+    
+    local args = {
+        [1] = itemFolder
+    }
+    
+    local success = pcall(function()
+        DropItem:FireServer(unpack(args))
+    end)
+    
+    if success then
+        local itemName = getBaseItemName(itemFolder.Name)
+        droppedItemsCache[itemName] = tick()
+        notify("AutoLoot", "Dropped item: " .. itemName, false)
+    end
+    
+    return success
+end
+
+-- Функция для проверки, нужно ли выбрасывать предмет
+local function shouldDropItem(itemName)
+    if not Config.AutoLoot.DropItemsEnabled then
+        return false
+    end
+    
+    local baseName = getBaseItemName(itemName)
+    for dropItemName, enabled in pairs(Config.AutoLoot.ItemsToDrop) do
+        if enabled and getBaseItemName(dropItemName) == baseName then
+            return true
+        end
+    end
+    return false
 end
 
 local function isValidWeapon()
@@ -444,7 +453,8 @@ local function findExistingItemFolder(inventory, itemName, lootItem)
     return nil, nil
 end
 
-local function getGridKey(pos, cellSize)
+local function getGridKey(pos)
+    local cellSize = Config.AutoLoot.GridCellSize
     local x = math.floor(pos.X / cellSize)
     local y = math.floor(pos.Y / cellSize)
     local z = math.floor(pos.Z / cellSize)
@@ -453,10 +463,10 @@ end
 
 local function addLootToGrid(lootModel, pos, items)
     if not lootModel:IsA("Model") or not lootModel.Parent or not lootModel.PrimaryPart then return end
-    local key = getGridKey(pos, Config.AutoLoot.GridCellSize)
+    local key = getGridKey(pos)
     Cache.LootGrid[key] = Cache.LootGrid[key] or {}
-    Cache.LootGrid[key][lootModel] = { items = items, position = pos, lastUpdate = tick() }
-    Cache.LootCache[lootModel] = { items = items, position = pos, lastUpdate = tick() }
+    Cache.LootGrid[key][lootModel] = { items = items, position = pos }
+    Cache.LootCache[lootModel] = { items = items, position = pos }
 end
 
 local function removeLootFromGrid(lootModel)
@@ -469,20 +479,25 @@ local function removeLootFromGrid(lootModel)
         end
     end
     Cache.LootCache[lootModel] = nil
-    Highlights.AutoLoot[lootModel] = nil
 end
 
 local function initializeLootCache()
-    local currentTime = tick()
     Cache.LootGrid = {}
     Cache.LootCache = {}
     local lootTypes = getLootTypes()
     
+    -- Проверка, что выбраны типы лута
+    if not lootTypes.CommonLoot and not lootTypes.RareLoot and not lootTypes.UncommonLoot then
+        return
+    end
+    
     for _, lootModel in ipairs(Spawned:GetChildren()) do
         if lootModel:IsA("Model") and lootModel.Parent and lootModel.PrimaryPart then
-            local isLootCrate = lootTypes[lootModel.Name] or false
+            local isLootType = lootTypes.CommonLoot and lootModel.Name == "CommonLoot" or
+                              lootTypes.RareLoot and lootModel.Name == "RareLoot" or
+                              lootTypes.UncommonLoot and lootModel.Name == "UncommonLoot"
             
-            if isLootCrate then
+            if isLootType then
                 local inventoryFolder = lootModel:FindFirstChild("Inventory")
                 if inventoryFolder then
                     local items = {}
@@ -501,10 +516,8 @@ local function initializeLootCache()
             end
         end
     end
-    
     Cache.CacheValid.Loot = true
-    Cache.LastLootCacheUpdate = currentTime
-    print("AutoLoot Cache Initialized: " .. table.getn(Cache.LootCache) .. " loot crates found")
+    Cache.LastLootCacheUpdate = tick()
 end
 
 local function findNearestLoot()
@@ -525,11 +538,26 @@ local function findNearestLoot()
     end
     
     local currentTime = tick()
-    local playerPos = Cache.RootPart.Position
     
-    -- Периодическая очистка кэша
-    if currentTime - Cache.LastCleanup > Config.AutoLoot.CleanupInterval then
+    -- Очистка кэша при необходимости
+    if currentTime - lastCacheCleanup > Config.AutoLoot.CacheCleanupInterval then
         cleanupCache()
+    end
+    
+    local playerPos = Cache.RootPart.Position
+    if Cache.PlayerPosition and (currentTime - Cache.LastPositionUpdate < Config.AutoLoot.CheckInterval) then
+        local dx = playerPos.X - Cache.PlayerPosition.X
+        local dy = playerPos.Y - Cache.PlayerPosition.Y
+        local dz = playerPos.Z - Cache.PlayerPosition.Z
+        if dx * dx + dy * dy + dz * dz < Config.AutoLoot.PositionUpdateThreshold ^ 2 then
+            playerPos = Cache.PlayerPosition
+        else
+            Cache.PlayerPosition = playerPos
+            Cache.LastPositionUpdate = currentTime
+        end
+    else
+        Cache.PlayerPosition = playerPos
+        Cache.LastPositionUpdate = currentTime
     end
     
     if currentTime - Cache.LastLootCacheUpdate > Config.AutoLoot.LootCacheUpdateInterval or not Cache.CacheValid.Loot then
@@ -541,55 +569,43 @@ local function findNearestLoot()
     local cellSize = Config.AutoLoot.GridCellSize
     local gridRadius = math.ceil(Config.AutoLoot.MaxDistance / cellSize) + 1
     local playerX, playerY, playerZ = math.floor(playerPos.X / cellSize), math.floor(playerPos.Y / cellSize), math.floor(playerPos.Z / cellSize)
-    
-    -- Поиск в ближайших ячейках сетки
+    local gridCells = {}
     for x = playerX - gridRadius, playerX + gridRadius do
         for y = playerY - gridRadius, playerY + gridRadius do
             for z = playerZ - gridRadius, playerZ + gridRadius do
-                local key = x .. "," .. y .. "," .. z
-                local cell = Cache.LootGrid[key]
-                if cell then
-                    for lootModel, data in pairs(cell) do
-                        if lootModel.Parent and lootModel.PrimaryPart then
-                            local dx = playerPos.X - data.position.X
-                            local dy = playerPos.Y - data.position.Y
-                            local dz = playerPos.Z - data.position.Z
-                            local distSqr = dx * dx + dy * dy + dz * dz
-                            
-                            if distSqr <= maxDistanceSqr and distSqr < minDistanceSqr then
-                                -- Проверяем есть ли доступные предметы в сундуке
-                                local availableItems = {}
-                                local inventoryFolder = lootModel:FindFirstChild("Inventory")
-                                if inventoryFolder then
-                                    for _, itemFolder in ipairs(inventoryFolder:GetChildren()) do
-                                        if itemFolder.Parent and isItemAllowed(itemFolder.Name) then
-                                            table.insert(availableItems, itemFolder)
-                                        end
-                                    end
-                                end
-                                
-                                if #availableItems > 0 then
-                                    nearestLoot = availableItems[1]
-                                    nearestItem = availableItems[1].Name
-                                    nearestModel = lootModel
-                                    minDistanceSqr = distSqr
-                                    break
-                                end
-                            end
-                        else
-                            -- Сундук больше не существует, удаляем из кэша
-                            removeLootFromGrid(lootModel)
-                        end
-                    end
-                end
-                if nearestLoot then break end
+                table.insert(gridCells, x .. "," .. y .. "," .. z)
             end
-            if nearestLoot then break end
         end
-        if nearestLoot then break end
     end
     
-    -- Обновляем подсветку
+    for _, key in ipairs(gridCells) do
+        local cell = Cache.LootGrid[key]
+        if cell then
+            for lootModel, data in pairs(cell) do
+                if lootModel.Parent and lootModel.PrimaryPart then
+                    local dx = playerPos.X - data.position.X
+                    local dy = playerPos.Y - data.position.Y
+                    local dz = playerPos.Z - data.position.Z
+                    local distSqr = dx * dx + dy * dy + dz * dz
+                    if distSqr <= maxDistanceSqr and distSqr < minDistanceSqr then
+                        for _, itemFolder in ipairs(data.items) do
+                            if itemFolder.Parent and itemFolder.Parent.Parent == lootModel then
+                                nearestLoot = itemFolder
+                                nearestItem = itemFolder.Name
+                                nearestModel = lootModel
+                                minDistanceSqr = distSqr
+                                break
+                            end
+                        end
+                    end
+                else
+                    removeLootFromGrid(lootModel)
+                    removeHighlight(lootModel, "AutoLoot")
+                end
+            end
+        end
+    end
+    
     if nearestLoot and Config.AutoLoot.Enabled then
         if Cache.CurrentLoot and Cache.CurrentLoot ~= nearestModel then
             removeHighlight(Cache.CurrentLoot, "AutoLoot")
@@ -615,6 +631,431 @@ local function getValidResourceTypes()
     end
 end
 
+local function getGridKey(pos)
+    local cellSize = Config.AutoMine.GridCellSize
+    local x = math.floor(pos.X / cellSize)
+    local y = math.floor(pos.Y / cellSize)
+    local z = math.floor(pos.Z / cellSize)
+    return x .. "," .. y .. "," .. z
+end
+
+local function addResourceToGrid(obj, pos)
+    if not obj:IsA("Model") or not obj.Parent or not obj.PrimaryPart then return end
+    local config = obj:FindFirstChild("Configuration")
+    local health = config and config:GetAttribute("Health") or 0
+    if health <= 0 then return end
+    
+    local validTypes = getValidResourceTypes()
+    for resourceType in pairs(validTypes) do
+        if string.find(obj.Name, resourceType) then
+            local resourceData = { obj = obj, position = pos, health = health }
+            local key = getGridKey(pos)
+            Cache.ResourceGrid[key] = Cache.ResourceGrid[key] or { Trees = {}, Stones = {}, Ores = {} }
+            if PRIORITY_GROUPS.Trees[resourceType] then
+                table.insert(Cache.ResourceGrid[key].Trees, resourceData)
+            end
+            if PRIORITY_GROUPS.Stones[resourceType] then
+                table.insert(Cache.ResourceGrid[key].Stones, resourceData)
+            end
+            if PRIORITY_GROUPS.Ores[resourceType] then
+                table.insert(Cache.ResourceGrid[key].Ores, resourceData)
+            end
+            break
+        end
+    end
+end
+
+local function removeResourceFromGrid(obj)
+    for key, gridCell in pairs(Cache.ResourceGrid) do
+        for _, group in pairs({"Trees", "Stones", "Ores"}) do
+            for i = #gridCell[group], 1, -1 do
+                if gridCell[group][i].obj == obj then
+                    table.remove(gridCell[group], i)
+                end
+            end
+        end
+    end
+end
+
+local function initializeResourceCache()
+    Cache.ResourceGrid = {}
+    Cache.PendingResources = {}
+    local validTypes = getValidResourceTypes()
+    for _, obj in ipairs(Spawned:GetChildren()) do
+        if obj:IsA("Model") and obj.Parent and obj.PrimaryPart then
+            for resourceType in pairs(validTypes) do
+                if string.find(obj.Name, resourceType) then
+                    addResourceToGrid(obj, obj.PrimaryPart.Position)
+                    break
+                end
+            end
+        end
+    end
+    Cache.CacheValid.Resources = true
+end
+
+local function processPendingResources()
+    local currentTime = tick()
+    if currentTime - Cache.LastCacheUpdate < Config.AutoMine.CacheUpdateInterval then
+        return
+    end
+    Cache.LastCacheUpdate = currentTime
+    
+    for _, obj in ipairs(Cache.PendingResources) do
+        if obj.Parent and obj.PrimaryPart then
+            addResourceToGrid(obj, obj.PrimaryPart.Position)
+        end
+    end
+    Cache.PendingResources = {}
+end
+
+local function checkZombieAlert()
+    if not Config.AutoMine.ZombieAlert_Enabled then
+        return false
+    end
+    
+    Cache.RootPart = Cache.RootPart or (Cache.Character and Cache.Character:FindFirstChild("HumanoidRootPart"))
+    if not Cache.RootPart then return false end
+    Cache.PlayerPosition = Cache.PlayerPosition or Cache.RootPart.Position
+    
+    local radiusSqr = Config.AutoMine.ZombieAlert_Radius ^ 2
+    for _, enemy in ipairs(Enemies:GetChildren()) do
+        local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+        local root = enemy:FindFirstChild("HumanoidRootPart")
+        if humanoid and root and humanoid.Health > 0 then
+            local dx = Cache.PlayerPosition.X - root.Position.X
+            local dy = Cache.PlayerPosition.Y - root.Position.Y
+            local dz = Cache.PlayerPosition.Z - root.Position.Z
+            if dx * dx + dy * dy + dz * dz <= radiusSqr then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function findNearestResource()
+    Cache.Character = Cache.Character or LocalPlayer.Character
+    if not Cache.Character then
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.AutoMineOreName = nil
+            Core.TheApocalypse.AutoMineHealthOre = nil
+        end
+        return nil
+    end
+    
+    Cache.RootPart = Cache.RootPart or Cache.Character:FindFirstChild("HumanoidRootPart")
+    if not Cache.RootPart then
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.AutoMineOreName = nil
+            Core.TheApocalypse.AutoMineHealthOre = nil
+        end
+        return nil
+    end
+    
+    local currentTime = tick()
+    local playerPos = Cache.RootPart.Position
+    if Cache.PlayerPosition and (currentTime - Cache.LastPositionUpdate < Config.AutoMine.CheckInterval) then
+        local dx = playerPos.X - Cache.PlayerPosition.X
+        local dy = playerPos.Y - Cache.PlayerPosition.Y
+        local dz = playerPos.Z - Cache.PlayerPosition.Z
+        if dx * dx + dy * dy + dz * dz < Config.AutoMine.PositionUpdateThreshold ^ 2 then
+            playerPos = Cache.PlayerPosition
+        else
+            Cache.PlayerPosition = playerPos
+            Cache.LastPositionUpdate = currentTime
+        end
+    else
+        Cache.PlayerPosition = playerPos
+        Cache.LastPositionUpdate = currentTime
+    end
+    
+    if Cache.CurrentResource then
+        local obj = Cache.CurrentResource.obj
+        if obj and obj.Parent and obj.PrimaryPart then
+            local config = obj:FindFirstChild("Configuration")
+            local health = config and config:GetAttribute("Health") or 0
+            if health > 0 then
+                local dx = playerPos.X - Cache.CurrentResource.position.X
+                local dy = playerPos.Y - Cache.CurrentResource.position.Y
+                local dz = playerPos.Z - Cache.CurrentResource.position.Z
+                if dx * dx + dy * dy + dz * dz <= Config.AutoMine.DistanceLimit ^ 2 then
+                    Cache.CurrentResource.health = health
+                    if Core and Core.TheApocalypse then
+                        Core.TheApocalypse.AutoMineOreName = obj.Name
+                        Core.TheApocalypse.AutoMineHealthOre = health
+                    end
+                    return obj
+                end
+            else
+                removeHighlight(obj, "AutoMine")
+                Cache.CurrentResource = nil
+                if Core and Core.TheApocalypse then
+                    Core.TheApocalypse.AutoMineOreName = nil
+                    Core.TheApocalypse.AutoMineHealthOre = nil
+                end
+            end
+        else
+            removeHighlight(obj, "AutoMine")
+            Cache.CurrentResource = nil
+            if Core and Core.TheApocalypse then
+                Core.TheApocalypse.AutoMineOreName = nil
+                Core.TheApocalypse.AutoMineHealthOre = nil
+            end
+        end
+    end
+    
+    if not Cache.CacheValid.Resources then
+        initializeResourceCache()
+    end
+    processPendingResources()
+    
+    local distanceLimitSqr = Config.AutoMine.DistanceLimit ^ 2
+    local earlyExitSqr = distanceLimitSqr * 0.3
+    
+    local function findClosestInGroup(group, gridCells)
+        local closestResource, closestHealth, minDistanceSqr = nil, nil, distanceLimitSqr
+        for _, key in ipairs(gridCells) do
+            local cell = Cache.ResourceGrid[key]
+            if cell then
+                for _, resource in ipairs(cell[group]) do
+                    if resource and resource.obj.Parent and resource.obj.PrimaryPart then
+                        local config = resource.obj:FindFirstChild("Configuration")
+                        local health = config and config:GetAttribute("Health") or 0
+                        if health > 0 then
+                            local dx = playerPos.X - resource.position.X
+                            local dy = playerPos.Y - resource.position.Y
+                            local dz = playerPos.Z - resource.position.Z
+                            local distSqr = dx * dx + dy * dy + dz * dz
+                            if distSqr <= minDistanceSqr then
+                                closestResource = resource.obj
+                                closestHealth = health
+                                resource.health = health
+                                minDistanceSqr = distSqr
+                                if minDistanceSqr <= earlyExitSqr then break end
+                            end
+                        end
+                    end
+                end
+                if minDistanceSqr <= earlyExitSqr then break end
+            end
+        end
+        return closestResource, closestHealth, minDistanceSqr
+    end
+    
+    local cellSize = Config.AutoMine.GridCellSize
+    local gridRadius = math.ceil(Config.AutoMine.DistanceLimit / cellSize) + 1
+    local playerX, playerY, playerZ = math.floor(playerPos.X / cellSize), math.floor(playerPos.Y / cellSize), math.floor(playerPos.Z / cellSize)
+    local gridCells = {}
+    for x = playerX - gridRadius, playerX + gridRadius do
+        for y = playerY - gridRadius, playerY + gridRadius do
+            for z = playerZ - gridRadius, playerZ + gridRadius do
+                table.insert(gridCells, x .. "," .. y .. "," .. z)
+            end
+        end
+    end
+    
+    local closestResource, closestHealth, closestDistanceSqr = nil, nil, math.huge
+    local priorityGroup = Config.AutoMine.PrioritizeResources
+    if priorityGroup ~= "None" then
+        closestResource, closestHealth, closestDistanceSqr = findClosestInGroup(priorityGroup, gridCells)
+        if closestResource then
+            Cache.CurrentResource = { obj = closestResource, position = closestResource.PrimaryPart.Position, health = closestHealth }
+            Cache.LastResourceCheck = currentTime
+            if Core and Core.TheApocalypse then
+                Core.TheApocalypse.AutoMineOreName = closestResource.Name
+                Core.TheApocalypse.AutoMineHealthOre = closestHealth
+            end
+            return closestResource
+        end
+        for _, group in ipairs({ "Trees", "Stones", "Ores" }) do
+            if group ~= priorityGroup then
+                local groupResource, groupHealth, groupDistanceSqr = findClosestInGroup(group, gridCells)
+                if groupResource and groupDistanceSqr < closestDistanceSqr then
+                    closestResource = groupResource
+                    closestHealth = groupHealth
+                    closestDistanceSqr = groupDistanceSqr
+                end
+            end
+        end
+    else
+        for _, group in ipairs({ "Trees", "Stones", "Ores"}) do
+            local groupResource, groupHealth, groupDistanceSqr = findClosestInGroup(group, gridCells)
+            if groupResource and groupDistanceSqr < closestDistanceSqr then
+                closestResource = groupResource
+                closestHealth = groupHealth
+                closestDistanceSqr = groupDistanceSqr
+            end
+        end
+    end
+    
+    Cache.CurrentResource = closestResource and { obj = closestResource, position = closestResource.PrimaryPart.Position, health = closestHealth }
+    Cache.LastResourceCheck = currentTime
+    if Core and Core.TheApocalypse then
+        Core.TheApocalypse.AutoMineOreName = closestResource and closestResource.Name or nil
+        Core.TheApocalypse.AutoMineHealthOre = closestResource and closestHealth or nil
+    end
+    return closestResource
+end
+
+local function getNearestTarget()
+    Cache.Character = Cache.Character or LocalPlayer.Character
+    if not Cache.Character then
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.isTargetNear = false
+        end
+        return nil
+    end
+    
+    Cache.RootPart = Cache.RootPart or Cache.Character:FindFirstChild("HumanoidRootPart")
+    if not Cache.RootPart then
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.isTargetNear = false
+        end
+        return nil
+    end
+    
+    local currentTime = tick()
+    local playerPos = Cache.RootPart.Position
+    if Cache.PlayerPosition and (currentTime - Cache.LastPositionUpdate < Config.AutoMine.CheckInterval) then
+        local dx = playerPos.X - Cache.PlayerPosition.X
+        local dy = playerPos.Y - Cache.PlayerPosition.Y
+        local dz = playerPos.Z - Cache.PlayerPosition.Z
+        if dx * dx + dy * dy + dz * dz < Config.AutoMine.PositionUpdateThreshold ^ 2 then
+            playerPos = Cache.PlayerPosition
+        else
+            Cache.PlayerPosition = playerPos
+            Cache.LastPositionUpdate = currentTime
+        end
+    else
+        Cache.PlayerPosition = playerPos
+        Cache.LastPositionUpdate = currentTime
+    end
+    
+    if Cache.CurrentTarget and currentTime - Cache.LastTargetCheck < Cache.TargetCheckInterval then
+        local humanoid = Cache.CurrentTarget:FindFirstChildOfClass("Humanoid")
+        local root = Cache.CurrentTarget:FindFirstChild("HumanoidRootPart")
+        local serverModel = Cache.CurrentTarget:FindFirstChild("ServerModel")
+        if humanoid and root and humanoid.Health > 0 and serverModel and serverModel.Value then
+            local dx = playerPos.X - root.Position.X
+            local dy = playerPos.Y - root.Position.Y
+            local dz = playerPos.Z - root.Position.Z
+            if dx * dx + dy * dy + dz * dz <= Config.KillAura.MaxDistance ^ 2 then
+                if Core and Core.TheApocalypse then
+                    Core.TheApocalypse.isTargetNear = true
+                end
+                return Cache.CurrentTarget
+            else
+                removeHighlight(Cache.CurrentTarget, "KillAura")
+                Cache.CurrentTarget = nil
+            end
+        else
+            removeHighlight(Cache.CurrentTarget, "KillAura")
+            Cache.CurrentTarget = nil
+        end
+    end
+    
+    local nearestTarget, minDistanceSqr = nil, Config.KillAura.MaxDistance ^ 2
+    for _, enemy in ipairs(Enemies:GetChildren()) do
+        local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+        local root = enemy:FindFirstChild("HumanoidRootPart")
+        local serverModel = enemy:FindFirstChild("ServerModel")
+        
+        if humanoid and root and humanoid.Health > 0 and serverModel and serverModel.Value then
+            local dx = playerPos.X - root.Position.X
+            local dy = playerPos.Y - root.Position.Y
+            local dz = playerPos.Z - root.Position.Z
+            local distSqr = dx * dx + dy * dy + dz * dz
+            if distSqr <= minDistanceSqr then
+                nearestTarget = enemy
+                minDistanceSqr = distSqr
+            end
+        end
+    end
+    
+    if Cache.CurrentTarget and Cache.CurrentTarget ~= nearestTarget then
+        removeHighlight(Cache.CurrentTarget, "KillAura")
+    end
+    Cache.CurrentTarget = nearestTarget
+    Cache.LastTargetCheck = currentTime
+    if Core and Core.TheApocalypse then
+        Core.TheApocalypse.isTargetNear = nearestTarget ~= nil
+    end
+    return nearestTarget
+end
+
+local function attackTarget(target, useRate)
+    if not target then return end
+    
+    Cache.RootPart = Cache.RootPart or (Cache.Character and Cache.Character:FindFirstChild("HumanoidRootPart"))
+    if not Cache.RootPart then return end
+    
+    local root = target:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    
+    local dx = Cache.RootPart.Position.X - root.Position.X
+    local dy = Cache.RootPart.Position.Y - root.Position.Y
+    local dz = Cache.RootPart.Position.Z - root.Position.Z
+    if dx * dx + dy * dy + dz * dz > Config.KillAura.MaxDistance ^ 2 then
+        removeHighlight(target, "KillAura")
+        return
+    end
+    
+    createHighlight(target, "KillAura")
+    local serverTarget = target.ServerModel.Value
+    if not serverTarget then return end
+    
+    ToolAction:FireServer("click", serverTarget)
+    
+    local finalDelay = math.max(0, useRate + 0.1 - Config.KillAura.MinusUseRate)
+    task.wait(finalDelay)
+    
+    if Config.KillAura.AutoRemoveHighlightDelay > 0 then
+        task.wait(Config.KillAura.AutoRemoveHighlightDelay)
+    end
+    
+    if Cache.CurrentTarget ~= target then
+        removeHighlight(target, "KillAura")
+    end
+end
+
+local function hitResource(target, item, useRate)
+    if not target or not item then
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.AutoMineOreName = nil
+            Core.TheApocalypse.AutoMineHealthOre = nil
+        end
+        return
+    end
+    
+    local config = target:FindFirstChild("Configuration")
+    local health = config and config:GetAttribute("Health") or 0
+    if health <= 0 then
+        if Cache.CurrentResource and Cache.CurrentResource.obj == target then
+            Cache.CurrentResource = nil
+        end
+        removeHighlight(target, "AutoMine")
+        if Core and Core.TheApocalypse then
+            Core.TheApocalypse.AutoMineOreName = nil
+            Core.TheApocalypse.AutoMineHealthOre = nil
+        end
+        return
+    end
+    
+    createHighlight(target, "AutoMine")
+    if Core and Core.TheApocalypse then
+        Core.TheApocalypse.AutoMineOreName = target.Name
+        Core.TheApocalypse.AutoMineHealthOre = health
+    end
+    ToolAction:FireServer("click", target, false)
+    
+    task.wait(useRate)
+    
+    if Cache.CurrentResource and Cache.CurrentResource.obj ~= target then
+        removeHighlight(target, "AutoMine")
+    end
+end
+
 local function mainLoop()
     LocalPlayer.CharacterAdded:Connect(function(newCharacter)
         Cache.Character = newCharacter
@@ -631,9 +1072,6 @@ local function mainLoop()
     end)
     
     local prevResource = nil
-    local lastDropTime = 0
-    local dropInterval = 5 -- Интервал проверки выкидывания предметов
-    
     while true do
         Cache.Character = Cache.Character or LocalPlayer.Character
         if not Cache.Character then
@@ -725,14 +1163,6 @@ local function mainLoop()
         end
         
         if Config.AutoLoot.Enabled then
-            local currentTime = tick()
-            
-            -- Периодически выкидываем предметы из инвентаря
-            if currentTime - lastDropTime > dropInterval then
-                dropItemsFromInventory()
-                lastDropTime = currentTime
-            end
-            
             local data = LocalPlayer:WaitForChild("Data")
             local inventory = LocalPlayer:WaitForChild("Inventory")
             local inventorySize = data:WaitForChild("InventorySize")
@@ -747,6 +1177,7 @@ local function mainLoop()
                 continue
             end
             
+            local currentTime = tick()
             if currentTime - Cache.LastLootCheck < Config.AutoLoot.CheckInterval then
                 task.wait(0.03)
                 continue
@@ -759,77 +1190,75 @@ local function mainLoop()
                 continue
             end
             
-            -- Проверяем, нужно ли выкидывать этот предмет
+            -- Проверяем, нужно ли выбрасывать этот предмет
+            local baseItemName = getBaseItemName(itemName)
             if shouldDropItem(itemName) then
-                -- Берем предмет из сундука
+                -- Если предмет в списке для выбрасывания, просто игнорируем его
+                notify("AutoLoot", "Skipping item to drop: " .. baseItemName, false)
+                task.wait(Config.AutoLoot.ActionDelay)
+                continue
+            end
+            
+            local countValue = lootItem:FindFirstChild("Count")
+            local lootCount = countValue and countValue.Value or 1
+            local itemConfig = getItemConfig(baseItemName)
+            local playerItemFolder, existingSlot = findExistingItemFolder(inventory, itemName, lootItem)
+            
+            if playerItemFolder then
+                local playerCountValue = playerItemFolder:FindFirstChild("Count")
+                local playerCount = playerCountValue and playerCountValue.Value or 0
+                if playerCount < itemConfig.maxStack then
+                    local args = {
+                        [1] = lootItem,
+                        [2] = playerItemFolder
+                    }
+                    local mergeAmount = math.min(lootCount, itemConfig.maxStack - playerCount)
+                    notify("AutoLoot", "Merging " .. mergeAmount .. "x " .. itemName .. " to slot " .. existingSlot, false)
+                    MergeItems:FireServer(unpack(args))
+                    task.wait(Config.AutoLoot.ActionDelay)
+                end
+            else
                 local freeSlot = findFreeSlot(inventory, maxSlots)
-                if freeSlot then
+                if freeSlot and (Config.AutoLoot.UseFreeSlotWhileWaiting or not findExistingItemFolder(inventory, itemName, lootItem)) then
                     local args = {
                         [1] = lootItem,
                         [2] = "Inventory",
                         [3] = freeSlot
                     }
-                    notify("AutoLoot", "Moving " .. itemName .. " to slot " .. freeSlot .. " (will drop)", false)
+                    notify("AutoLoot", "Moving " .. itemName .. " to slot " .. freeSlot, false)
                     MoveItem:FireServer(unpack(args))
                     task.wait(Config.AutoLoot.ActionDelay)
-                    
-                    -- Ждем пока предмет появится в инвентаре и выкидываем его
-                    task.wait(0.5)
-                    dropItemsFromInventory()
-                end
-            else
-                -- Обычная логика лута
-                local countValue = lootItem:FindFirstChild("Count")
-                local lootCount = countValue and countValue.Value or 1
-                local baseItemName = getBaseItemName(itemName)
-                local itemConfig = getItemConfig(baseItemName)
-                local playerItemFolder, existingSlot = findExistingItemFolder(inventory, itemName, lootItem)
-                
-                if playerItemFolder then
-                    local playerCountValue = playerItemFolder:FindFirstChild("Count")
-                    local playerCount = playerCountValue and playerCountValue.Value or 0
-                    if playerCount < itemConfig.maxStack then
-                        local args = {
-                            [1] = lootItem,
-                            [2] = playerItemFolder
-                        }
-                        local mergeAmount = math.min(lootCount, itemConfig.maxStack - playerCount)
-                        notify("AutoLoot", "Merging " .. mergeAmount .. "x " .. itemName .. " to slot " .. existingSlot, false)
-                        MergeItems:FireServer(unpack(args))
-                        task.wait(Config.AutoLoot.ActionDelay)
-                    end
                 else
-                    local freeSlot = findFreeSlot(inventory, maxSlots)
-                    if freeSlot and (Config.AutoLoot.UseFreeSlotWhileWaiting or not findExistingItemFolder(inventory, itemName, lootItem)) then
-                        local args = {
-                            [1] = lootItem,
-                            [2] = "Inventory",
-                            [3] = freeSlot
-                        }
-                        notify("AutoLoot", "Moving " .. itemName .. " to slot " .. freeSlot, false)
-                        MoveItem:FireServer(unpack(args))
-                        task.wait(Config.AutoLoot.ActionDelay)
-                    else
-                        if itemConfig.maxStack > 1 then
-                            for _, itemFolder in ipairs(inventory:GetChildren()) do
-                                if getBaseItemName(itemFolder.Name) == baseItemName then
-                                    local countValue = itemFolder:FindFirstChild("Count")
-                                    local indexValue = itemFolder:FindFirstChild("Index")
-                                    if countValue and indexValue and countValue.Value < itemConfig.maxStack and itemFolder ~= lootItem and itemFolder.Parent then
-                                        local playerCount = countValue.Value
-                                        local mergeAmount = math.min(lootCount, itemConfig.maxStack - playerCount)
-                                        local args = {
-                                            [1] = lootItem,
-                                            [2] = itemFolder
-                                        }
-                                        notify("AutoLoot", "Merging " .. mergeAmount .. "x " .. itemName .. " to slot " .. indexValue.Value, false)
-                                        MergeItems:FireServer(unpack(args))
-                                        task.wait(Config.AutoLoot.ActionDelay)
-                                        break
-                                    end
+                    if itemConfig.maxStack > 1 then
+                        for _, itemFolder in ipairs(inventory:GetChildren()) do
+                            if getBaseItemName(itemFolder.Name) == baseItemName then
+                                local countValue = itemFolder:FindFirstChild("Count")
+                                local indexValue = itemFolder:FindFirstChild("Index")
+                                if countValue and indexValue and countValue.Value < itemConfig.maxStack and itemFolder ~= lootItem and itemFolder.Parent then
+                                    local playerCount = countValue.Value
+                                    local mergeAmount = math.min(lootCount, itemConfig.maxStack - playerCount)
+                                    local args = {
+                                        [1] = lootItem,
+                                        [2] = itemFolder
+                                    }
+                                    notify("AutoLoot", "Merging " .. mergeAmount .. "x " .. itemName .. " to slot " .. indexValue.Value, false)
+                                    MergeItems:FireServer(unpack(args))
+                                    task.wait(Config.AutoLoot.ActionDelay)
+                                    break
                                 end
                             end
                         end
+                    end
+                end
+            end
+            
+            -- Проверяем инвентарь на предметы для выбрасывания
+            if Config.AutoLoot.DropItemsEnabled then
+                for _, itemFolder in ipairs(inventory:GetChildren()) do
+                    local itemFolderName = itemFolder.Name
+                    if shouldDropItem(itemFolderName) then
+                        dropItem(itemFolder)
+                        task.wait(Config.AutoLoot.ActionDelay)
                     end
                 end
             end
@@ -855,7 +1284,11 @@ end
 Spawned.ChildAdded:Connect(function(child)
     if child:IsA("Model") and child.Parent and child.PrimaryPart then
         local lootTypes = getLootTypes()
-        if lootTypes[child.Name] then
+        local isLootType = lootTypes.CommonLoot and child.Name == "CommonLoot" or
+                          lootTypes.RareLoot and child.Name == "RareLoot" or
+                          lootTypes.UncommonLoot and child.Name == "UncommonLoot"
+        
+        if isLootType then
             local inventoryFolder = child:FindFirstChild("Inventory")
             if inventoryFolder then
                 local items = {}
@@ -1099,8 +1532,6 @@ local function initializeUI(UI)
                     if Core and Core.TheApocalypse then
                         Core.TheApocalypse.AutoLootItemName = nil
                     end
-                else
-                    Cache.CacheValid.Loot = false
                 end
                 notify("AutoLoot", "AutoLoot " .. (value and "Enabled" or "Disabled"), true)
             end
@@ -1208,7 +1639,7 @@ local function initializeUI(UI)
         table.sort(itemOptions)
         
         uiElements.AutoLootItemsList = autoLootSection:Dropdown({
-            Name = "Items List (Filter)",
+            Name = "Items List",
             Default = Config.AutoLoot.ItemsList,
             Options = itemOptions,
             Search = true,
@@ -1221,28 +1652,57 @@ local function initializeUI(UI)
         })
         autoLootSection:SubLabel({ Text = "[ ⁉️ ] Select items for Exact or Exclude mode" })
         
-        -- Новый dropdown для предметов, которые нужно выкидывать
+        -- НОВЫЙ Dropdown для предметов, которые нужно выбрасывать
         uiElements.AutoLootItemsToDrop = autoLootSection:Dropdown({
-            Name = "Items To Drop",
+            Name = "Items to Drop",
             Default = Config.AutoLoot.ItemsToDrop,
             Options = itemOptions,
             Search = true,
             Multi = true,
             Callback = function(value)
                 Config.AutoLoot.ItemsToDrop = value
-                notify("AutoLoot", "Items To Drop updated", false)
+                notify("AutoLoot", "Items to Drop updated", false)
             end
         })
-        autoLootSection:SubLabel({ Text = "Items from this list will be picked up but immediately dropped" })
+        autoLootSection:SubLabel({ Text = "[ ⁉️ ] These items will be picked up and immediately dropped" })
         
-        uiElements.AutoLootCleanupCache = autoLootSection:Button({
-            Name = "Cleanup Cache",
-            Callback = function()
-                cleanupCache()
-                notify("AutoLoot", "Cache cleaned up", true)
+        uiElements.AutoLootDropItemsEnabled = autoLootSection:Toggle({
+            Name = "Enable Drop Items",
+            Default = Config.AutoLoot.DropItemsEnabled,
+            Callback = function(value)
+                Config.AutoLoot.DropItemsEnabled = value
+                notify("AutoLoot", "Drop Items " .. (value and "Enabled" or "Disabled"), true)
             end
         })
-        autoLootSection:SubLabel({ Text = "Manually clean up cache" })
+        autoLootSection:SubLabel({ Text = "[ ⁉️ ] Enable automatic dropping of selected items" })
+        
+        autoLootSection:Divider()
+        
+        uiElements.AutoLootCacheCleanupInterval = autoLootSection:Slider({
+            Name = "Cache Cleanup Interval",
+            Minimum = 5,
+            Maximum = 60,
+            Default = Config.AutoLoot.CacheCleanupInterval,
+            Precision = 0,
+            Callback = function(value)
+                Config.AutoLoot.CacheCleanupInterval = value
+                notify("AutoLoot", "Cache Cleanup Interval set to: " .. value, false)
+            end
+        })
+        autoLootSection:SubLabel({ Text = "[ ⁉️ ] Interval for cleaning cache (prevents FPS drops)" })
+        
+        uiElements.AutoLootMaxCacheSize = autoLootSection:Slider({
+            Name = "Max Cache Size",
+            Minimum = 100,
+            Maximum = 1000,
+            Default = Config.AutoLoot.MaxCacheSize,
+            Precision = 0,
+            Callback = function(value)
+                Config.AutoLoot.MaxCacheSize = value
+                notify("AutoLoot", "Max Cache Size set to: " .. value, false)
+            end
+        })
+        autoLootSection:SubLabel({ Text = "[ ⁉️ ] Maximum number of items in cache" })
         
         if UI.Tabs.Config then
             local configSection = UI.Tabs.Config:Section({ Name = "KillAura, AutoMine, AutoLoot Sync", Side = "Right" })
@@ -1263,6 +1723,13 @@ local function initializeUI(UI)
                     Config.AutoMine.CheckInterval = autoMineCheckInterval
                     Config.AutoMine.ZombieAlert_Radius = autoMineZombieAlertRadius
                     Config.AutoMine.GridCellSize = autoMineGridCellSize
+                    notify("Config", "KillAura MaxDistance: " .. tostring(killAuraMaxDistance), false)
+                    notify("Config", "KillAura MinusUseRate: " .. tostring(killAuraMinusUseRate), false)
+                    notify("Config", "AutoMine DistanceLimit: " .. tostring(autoMineDistanceLimit), false)
+                    notify("Config", "AutoMine CheckInterval: " .. tostring(autoMineCheckInterval), false)
+                    notify("Config", "AutoMine ZombieAlertRadius: " .. tostring(autoMineZombieAlertRadius), false)
+                    notify("Config", "AutoMine GridCellSize: " .. tostring(autoMineGridCellSize), false)
+                    notify("Config", "KillAura, AutoMine synchronized!", true)
                 end
             })
         else
