@@ -19,8 +19,8 @@ local Consume = ItemsFolder:WaitForChild("Consume")
 local Config = {
     AutoEat = {
         Enabled = false,
-        HungerThreshold = 50,
-        ThirstThreshold = 50,
+        HungerThreshold = 10,
+        ThirstThreshold = 10,
         CheckInterval = 2,
         Priority = "Both",
         UseBestItem = true,
@@ -28,10 +28,10 @@ local Config = {
     },
     AutoHeal = {
         Enabled = false,
-        HealthThreshold = 70,
-        CheckInterval = 0.5, -- Быстрая проверка здоровья
+        HealthThreshold = 30,
+        CheckInterval = 1,
         UseBestItem = true,
-        FastHeal = true, -- Быстрое лечение
+        FastHeal = true,
         SwapWhenFull = true
     }
 }
@@ -42,7 +42,6 @@ local FoodItems = {}
 local HealItems = {}
 local notify = print
 local IsHealingInProgress = false
-local LastEquippedSlot = nil
 
 -- Получение конфигурации consumable предметов
 local function getConsumableConfig(itemName)
@@ -501,7 +500,6 @@ local function useHealItem(healItem)
     
     if healItem.location == "Inventory" then
         if Config.AutoHeal.FastHeal then
-            -- Быстрое лечение: используем из инвентаря без перемещения в тулбар
             local freeSlot = findFreeToolbarSlot()
             
             if freeSlot then
@@ -520,7 +518,6 @@ local function useHealItem(healItem)
                 Consume:FireServer()
                 wait(0.05)
                 
-                -- Возвращаем пустой слот
                 EquipItem:FireServer(0)
                 
                 -- Возвращаем предмет в инвентарь
@@ -595,7 +592,6 @@ local function autoHeal()
     local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
     if not humanoid then return end
     
-    -- Быстрая проверка здоровья
     local currentHealth = humanoid.Health
     local maxHealth = humanoid.MaxHealth
     
@@ -603,7 +599,6 @@ local function autoHeal()
         return
     end
     
-    -- Быстро сканируем предметы
     scanHealItems()
     
     if #HealItems == 0 then
@@ -614,6 +609,35 @@ local function autoHeal()
     
     if bestHealItem then
         useHealItem(bestHealItem)
+    end
+end
+
+-- Функции для Optimize секции
+local function cleanDroppedItems()
+    local workspaceItems = game:GetService("Workspace"):FindFirstChild("Items")
+    if workspaceItems then
+        local count = 0
+        for _, item in ipairs(workspaceItems:GetChildren()) do
+            item:Destroy()
+            count = count + 1
+        end
+        notify("Optimize", "Cleaned " .. count .. " dropped items", true)
+    else
+        notify("Optimize", "No Items folder found in Workspace", false)
+    end
+end
+
+local function removeZombies()
+    local enemies = game:GetService("Workspace"):FindFirstChild("Enemies")
+    if enemies then
+        local count = 0
+        for _, enemy in ipairs(enemies:GetChildren()) do
+            enemy:Destroy()
+            count = count + 1
+        end
+        notify("Optimize", "Removed " .. count .. " zombies/enemies", true)
+    else
+        notify("Optimize", "No Enemies folder found in Workspace", false)
     end
 end
 
@@ -676,6 +700,8 @@ local function initializeUI(UI)
         -- Секция AutoEat (левая сторона)
         local eatSection = UI.Tabs.Main:Section({Name = "AutoEat", Side = "Left"})
         
+        eatSection:Header({Name = "AutoEat"})
+        
         local eatInfoLabel = eatSection:SubLabel({Text = "Loading food data..."})
         
         eatSection:Toggle({
@@ -691,7 +717,6 @@ local function initializeUI(UI)
             Name = "Hunger Threshold",
             Minimum = 0,
             Maximum = 100,
-            DisplayMethod = 'Percent',
             Default = Config.AutoEat.HungerThreshold,
             Precision = 0,
             Callback = function(value)
@@ -703,7 +728,6 @@ local function initializeUI(UI)
             Name = "Thirst Threshold",
             Minimum = 0,
             Maximum = 100,
-            DisplayMethod = 'Percent',
             Default = Config.AutoEat.ThirstThreshold,
             Precision = 0,
             Callback = function(value)
@@ -712,11 +736,11 @@ local function initializeUI(UI)
         })
         
         eatSection:Slider({
-            Name = "Check Interval (sec)",
+            Name = "Check Interval",
             Minimum = 1,
             Maximum = 10,
             Default = Config.AutoEat.CheckInterval,
-            Precision = 1,
+            Precision = 0,
             Callback = function(value)
                 Config.AutoEat.CheckInterval = value
             end
@@ -736,7 +760,6 @@ local function initializeUI(UI)
             Default = Config.AutoEat.UseBestItem,
             Callback = function(value)
                 Config.AutoEat.UseBestItem = value
-                notify("AutoAFK", "Best item selection " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
@@ -745,7 +768,6 @@ local function initializeUI(UI)
             Default = Config.AutoEat.SwapWhenFull,
             Callback = function(value)
                 Config.AutoEat.SwapWhenFull = value
-                notify("AutoAFK", "Toolbar swap " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
@@ -757,6 +779,8 @@ local function initializeUI(UI)
         
         -- Секция AutoHeal (левая сторона)
         local healSection = UI.Tabs.Main:Section({Name = "AutoHeal", Side = "Left"})
+        
+        healSection:Header({Name = "AutoHeal"})
         
         local healInfoLabel = healSection:SubLabel({Text = "Loading health data..."})
         
@@ -773,7 +797,6 @@ local function initializeUI(UI)
             Name = "Health Threshold",
             Minimum = 0,
             Maximum = 100,
-            DisplayMethod = 'Percent',
             Default = Config.AutoHeal.HealthThreshold,
             Precision = 0,
             Callback = function(value)
@@ -782,11 +805,11 @@ local function initializeUI(UI)
         })
         
         healSection:Slider({
-            Name = "Check Interval (sec)",
-            Minimum = 0.1,
-            Maximum = 2,
+            Name = "Check Interval",
+            Minimum = 0,
+            Maximum = 5,
             Default = Config.AutoHeal.CheckInterval,
-            Precision = 1,
+            Precision = 0,
             Callback = function(value)
                 Config.AutoHeal.CheckInterval = value
             end
@@ -797,7 +820,6 @@ local function initializeUI(UI)
             Default = Config.AutoHeal.UseBestItem,
             Callback = function(value)
                 Config.AutoHeal.UseBestItem = value
-                notify("AutoAFK", "Best heal selection " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
@@ -806,7 +828,6 @@ local function initializeUI(UI)
             Default = Config.AutoHeal.FastHeal,
             Callback = function(value)
                 Config.AutoHeal.FastHeal = value
-                notify("AutoAFK", "Fast heal " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
@@ -815,7 +836,6 @@ local function initializeUI(UI)
             Default = Config.AutoHeal.SwapWhenFull,
             Callback = function(value)
                 Config.AutoHeal.SwapWhenFull = value
-                notify("AutoAFK", "Toolbar swap " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
@@ -870,6 +890,25 @@ local function initializeUI(UI)
                 wait(1)
             end
         end)
+    end
+    
+    -- Добавляем секцию Optimize в Misc
+    if UI.Tabs and UI.Tabs.Misc then
+        local optimizeSection = UI.Tabs.Misc:Section({Name = "Optimize", Side = "Left"})
+        
+        optimizeSection:Header({Name = "Performance Optimization"})
+        
+        optimizeSection:Button({
+            Name = "Clean Dropped Items",
+            Callback = cleanDroppedItems
+        })
+        
+        optimizeSection:Button({
+            Name = "Remove Zombies",
+            Callback = removeZombies
+        })
+        
+        optimizeSection:SubLabel({Text = "Removes dropped items and enemies to improve performance"})
     end
 end
 
