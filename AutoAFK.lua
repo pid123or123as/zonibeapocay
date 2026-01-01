@@ -36,6 +36,9 @@ local Config = {
     }
 }
 
+-- UI элементы для синхронизации
+local uiElements = {}
+
 -- Кэш предметов и состояний
 local ItemCache = {}
 local FoodItems = {}
@@ -646,7 +649,7 @@ local function testEat()
     scanFoodItems()
     
     if #FoodItems == 0 then
-        notify("AutoAFK", "No food or water in inventory!", false)
+        notify("AutoEat", "No food or water in inventory!", false)
         return
     end
     
@@ -654,9 +657,9 @@ local function testEat()
     local used = useFood(testFood)
     
     if used then
-        notify("AutoAFK", "Test: used " .. testFood.name, false)
+        notify("AutoEat", "Test: used " .. testFood.name, false)
     else
-        notify("AutoAFK", "Test: failed to use item", false)
+        notify("AutoEat", "Test: failed to use item", false)
     end
 end
 
@@ -665,7 +668,7 @@ local function testHeal()
     scanHealItems()
     
     if #HealItems == 0 then
-        notify("AutoAFK", "No healing items in inventory!", false)
+        notify("AutoHeal", "No healing items in inventory!", false)
         return
     end
     
@@ -673,9 +676,9 @@ local function testHeal()
     local used = useHealItem(testHeal)
     
     if used then
-        notify("AutoAFK", "Test: used " .. testHeal.name, false)
+        notify("AutoHeal", "Test: used " .. testHeal.name, false)
     else
-        notify("AutoAFK", "Test: failed to use healing item", false)
+        notify("AutoHeal", "Test: failed to use healing item", false)
     end
 end
 
@@ -694,48 +697,75 @@ local function mainLoop()
     end
 end
 
--- Инициализация UI с отдельными секциями
+local function SynchronizeConfigValues()
+    if not uiElements then return end
+    
+    if uiElements.HungerThresh and uiElements.HungerThresh.GetValue then
+        local uiValue = uiElements.HungerThresh:GetValue()
+        if uiValue ~= Config.AutoEat.HungerThreshold then
+            Config.AutoEat.HungerThreshold = uiValue
+        end
+    end
+    
+    if uiElements.ThristThresh and uiElements.ThristThresh.GetValue then
+        Config.AutoEat.ThirstThreshold = uiElements.ThristThresh:GetValue()
+    end
+    
+    if uiElements.CheckIntervalaye and uiElements.CheckIntervalaye.GetValue then
+        Config.AutoEat.CheckInterval = uiElements.CheckIntervalaye:GetValue()
+    end
+    
+    if uiElements.HeslThreshold and uiElements.HeslThreshold.GetValue then
+        Config.AutoHeal.HealthThreshold = uiElements.HeslThreshold:GetValue()
+    end
+    
+    if uiElements.Checkintervalheal and uiElements.Checkintervalheal.GetValue then
+        Config.AutoHeal.CheckInterval = uiElements.Checkintervalheal:GetValue()
+    end
+end
+
 local function initializeUI(UI)
     if UI.Tabs and UI.Tabs.Main then
-        -- Секция AutoEat (левая сторона)
         local eatSection = UI.Tabs.Main:Section({Name = "AutoEat", Side = "Left"})
         
         eatSection:Header({Name = "AutoEat"})
         
         local eatInfoLabel = eatSection:SubLabel({Text = "Loading food data..."})
         
-        eatSection:Toggle({
+        uiElements.EnabledAutoEat = eatSection:Toggle({
             Name = "Enabled",
             Default = Config.AutoEat.Enabled,
             Callback = function(value)
                 Config.AutoEat.Enabled = value
                 notify("AutoAFK", "AutoEat " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'EnabledEat')
         
-        eatSection:Slider({
+        uiElements.HungerThresh = eatSection:Slider({
             Name = "Hunger Threshold",
             Minimum = 0,
             Maximum = 100,
+            DisplayMethod = 'Percent',
             Default = Config.AutoEat.HungerThreshold,
             Precision = 0,
             Callback = function(value)
                 Config.AutoEat.HungerThreshold = value
             end
-        })
+        }, 'HungerThres')
         
-        eatSection:Slider({
+        uiElements.ThristThresh = eatSection:Slider({
             Name = "Thirst Threshold",
             Minimum = 0,
             Maximum = 100,
+            DisplayMethod = 'Percent',
             Default = Config.AutoEat.ThirstThreshold,
             Precision = 0,
             Callback = function(value)
                 Config.AutoEat.ThirstThreshold = value
             end
-        })
+        }, 'ThirstThres')
         
-        eatSection:Slider({
+        uiElements.CheckIntervalaye = eatSection:Slider({
             Name = "Check Interval",
             Minimum = 1,
             Maximum = 10,
@@ -744,67 +774,66 @@ local function initializeUI(UI)
             Callback = function(value)
                 Config.AutoEat.CheckInterval = value
             end
-        })
+        }, 'CheckInterEat')
         
-        eatSection:Dropdown({
+        uiElements.PriorityEat = eatSection:Dropdown({
             Name = "Priority",
             Default = Config.AutoEat.Priority,
             Options = {"Both", "Hunger", "Thirst"},
             Callback = function(value)
                 Config.AutoEat.Priority = value
             end
-        })
+        }, 'PriorityEat')
         
-        eatSection:Toggle({
+        uiElements.UseBestItemAEAT = eatSection:Toggle({
             Name = "Use Best Item",
             Default = Config.AutoEat.UseBestItem,
             Callback = function(value)
                 Config.AutoEat.UseBestItem = value
             end
-        })
+        }, 'BestAutoEat')
         
-        eatSection:Toggle({
+        uiElements.SwapWhenFullAutoEat = eatSection:Toggle({
             Name = "Swap When Toolbar Full",
             Default = Config.AutoEat.SwapWhenFull,
             Callback = function(value)
                 Config.AutoEat.SwapWhenFull = value
             end
-        })
+        }, 'SwapAutoEat')
         
         eatSection:Divider()
         eatSection:Button({
             Name = "Test Eat",
             Callback = testEat
         })
-        
-        -- Секция AutoHeal (левая сторона)
-        local healSection = UI.Tabs.Main:Section({Name = "AutoHeal", Side = "Left"})
+        local healSection = UI.Tabs.Main:Section({Name = "AutoHeal", Side = "Right"})
         
         healSection:Header({Name = "AutoHeal"})
         
         local healInfoLabel = healSection:SubLabel({Text = "Loading health data..."})
         
-        healSection:Toggle({
+        uiElements.EnabledAutoHeal = healSection:Toggle({
             Name = "Enabled",
             Default = Config.AutoHeal.Enabled,
             Callback = function(value)
                 Config.AutoHeal.Enabled = value
                 notify("AutoAFK", "AutoHeal " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'EnabledHeal')
         
-        healSection:Slider({
+        uiElements.HeslThreshold = healSection:Slider({
             Name = "Health Threshold",
             Minimum = 0,
             Maximum = 100,
+            DisplayMethod = 'Percent',
             Default = Config.AutoHeal.HealthThreshold,
             Precision = 0,
             Callback = function(value)
                 Config.AutoHeal.HealthThreshold = value
             end
-        })
+        }, 'HealThres')
         
-        healSection:Slider({
+        uiElements.Checkintervalheal = healSection:Slider({
             Name = "Check Interval",
             Minimum = 0,
             Maximum = 5,
@@ -813,31 +842,31 @@ local function initializeUI(UI)
             Callback = function(value)
                 Config.AutoHeal.CheckInterval = value
             end
-        })
+        }, 'CheckInterHeal')
         
-        healSection:Toggle({
+        uiElements.UseBestItemHeal = healSection:Toggle({
             Name = "Use Best Item",
             Default = Config.AutoHeal.UseBestItem,
             Callback = function(value)
                 Config.AutoHeal.UseBestItem = value
             end
-        })
+        }, 'UseBestHeal')
         
-        healSection:Toggle({
+        uiElements.FastHeal = healSection:Toggle({
             Name = "Fast Heal",
             Default = Config.AutoHeal.FastHeal,
             Callback = function(value)
                 Config.AutoHeal.FastHeal = value
             end
-        })
+        }, 'FastHeal')
         
-        healSection:Toggle({
+        uiElements.SwapWhenFullHeal = healSection:Toggle({
             Name = "Swap When Toolbar Full",
             Default = Config.AutoHeal.SwapWhenFull,
             Callback = function(value)
                 Config.AutoHeal.SwapWhenFull = value
             end
-        })
+        }, 'SwapHeal')
         
         healSection:Divider()
         healSection:Button({
@@ -845,7 +874,6 @@ local function initializeUI(UI)
             Callback = testHeal
         })
         
-        -- Обновление информации
         local function updateInfo()
             if Data and Data.Hunger and Data.Thirst then
                 local hungerStatus = Data.Hunger.Value < Config.AutoEat.HungerThreshold and "⚠ Low" or "✓ OK"
@@ -892,7 +920,6 @@ local function initializeUI(UI)
         end)
     end
     
-    -- Добавляем секцию Optimize в Misc
     if UI.Tabs and UI.Tabs.Misc then
         local optimizeSection = UI.Tabs.Misc:Section({Name = "Optimize", Side = "Left"})
         
@@ -943,6 +970,17 @@ function AutoAFK.Init(UI, core, notifyFunc)
     Toolbar.ChildRemoved:Connect(function()
         scanFoodItems()
         scanHealItems()
+    end)
+    
+    -- Синхронизация конфига каждую секунду
+    local synchronizationTimer = 0
+    game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+        synchronizationTimer = synchronizationTimer + deltaTime
+        
+        if synchronizationTimer >= 1.0 then
+            synchronizationTimer = 0
+            SynchronizeConfigValues()
+        end
     end)
     
     -- Первоначальное сканирование
