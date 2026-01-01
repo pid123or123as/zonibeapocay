@@ -421,14 +421,13 @@ local function getItemConfig(itemName)
     return config
 end
 
--- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка, должен ли предмет быть взят AutoLoot
+-- ГЛАВНОЕ ИСПРАВЛЕНИЕ: Проверка, должен ли предмет быть взят AutoLoot
 local function isItemAllowed(itemName)
     local baseItemName = getBaseItemName(itemName)
     
-    -- Если включен ExactModeSync и AutoLoot в режиме Exact
+    -- Если включен ExactModeSync, AutoLoot должен собирать ВСЕ предметы
     if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
-        -- В этом режиме AutoLoot ДОЛЖЕН собирать ВСЕ предметы (не только из списка)
-        return true
+        return true -- Собираем ВСЕ предметы при включенном ExactModeSync
     end
     
     -- Обычная логика AutoLoot без ExactModeSync
@@ -1261,23 +1260,28 @@ local function hitResource(target, item, useRate)
     end
 end
 
--- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка, должен ли предмет быть выброшен AutoDrop
+-- ГЛАВНОЕ ИСПРАВЛЕНИЕ: Проверка, должен ли предмет быть выброшен AutoDrop
 local function shouldDropItem(itemName)
     local baseItemName = getBaseItemName(itemName)
     
     -- Если включен ExactModeSync и AutoLoot в режиме Exact
     if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
-        -- В этом режиме мы выкидываем предметы, которые НЕ находятся в списке Exact Items
+        -- Выкидываем предметы, которые НЕ находятся в списке Exact
         local itemsList = Config.AutoLoot.ItemsList
+        local foundInExactList = false
+        
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
                 if (type(enabled) == "boolean" and enabled and baseItemName == item) or
                    (type(enabled) == "string" and baseItemName == enabled) then
-                    return false -- Не выкидываем, так как предмет в списке Exact (мы его оставляем)
+                    foundInExactList = true
+                    break
                 end
             end
         end
-        return true -- Выкидываем, так как предмет НЕ в списке Exact
+        
+        -- Если предмет НЕ в Exact списке - выкидываем его
+        return not foundInExactList
     end
     
     -- Обычная проверка по списку ItemsToDrop (если ExactModeSync не включен)
@@ -1940,7 +1944,6 @@ local function initializeUI(UI)
                 notify("AutoDrop", "Exact Mode Sync " .. (value and "Enabled" or "Disabled"), true)
             end
         })
-        autoDropSection:SubLabel({ Text = "[ ⁉️ ] When enabled, AutoLoot (Exact mode) collects ALL items, AutoDrop drops items NOT in the Exact list" })
         
         uiElements.AutoDropCheckInterval = autoDropSection:Slider({
             Name = "Check Interval",
@@ -1966,6 +1969,7 @@ local function initializeUI(UI)
             end
         })
         autoDropSection:SubLabel({ Text = "[ ⁉️ ] Only AutoLoot: Drop only after AutoLoot picks up items" })
+        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Exact Mode Sync: AutoLoot (Exact mode) collects ALL items, AutoDrop drops items NOT in the Exact list" })
     end
 end
 
