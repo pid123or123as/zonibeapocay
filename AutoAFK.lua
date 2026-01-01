@@ -822,7 +822,7 @@ local function initializeUI(UI)
         
         afkSection:Slider({
             Name = "Check Interval (sec)",
-            Minimum = 1,
+            Minimum = 0.1,
             Maximum = 10,
             Default = Config.AutoHeal.CheckInterval,
             Precision = 1,
