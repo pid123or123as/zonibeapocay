@@ -421,29 +421,21 @@ local function getItemConfig(itemName)
     return config
 end
 
--- Исправленная функция для проверки разрешенных предметов с поддержкой ExactModeSync
+-- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка, должен ли предмет быть взят AutoLoot
 local function isItemAllowed(itemName)
     local baseItemName = getBaseItemName(itemName)
     
     -- Если включен ExactModeSync и AutoLoot в режиме Exact
     if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
-        -- В этом режиме мы БЕРЕМ предметы НЕ из списка Exact
-        local itemsList = Config.AutoLoot.ItemsList
-        if type(itemsList) == "table" then
-            for item, enabled in pairs(itemsList) do
-                if (type(enabled) == "boolean" and enabled and baseItemName == item) or
-                   (type(enabled) == "string" and baseItemName == enabled) then
-                    return false -- Не берем, так как предмет в списке Exact
-                end
-            end
-        end
-        return true -- Берем, так как предмет не в списке Exact
+        -- В этом режиме AutoLoot ДОЛЖЕН собирать ВСЕ предметы (не только из списка)
+        return true
     end
     
-    -- Обычная логика
+    -- Обычная логика AutoLoot без ExactModeSync
     if Config.AutoLoot.Mode == "None" then
         return true
     elseif Config.AutoLoot.Mode == "Exact" then
+        -- Берем ТОЛЬКО предметы из списка ItemsList
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
@@ -455,6 +447,7 @@ local function isItemAllowed(itemName)
         end
         return false
     elseif Config.AutoLoot.Mode == "Exclude" then
+        -- Берем все предметы КРОМЕ тех, что в списке ItemsList
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
@@ -1268,26 +1261,26 @@ local function hitResource(target, item, useRate)
     end
 end
 
--- Функция проверки, должен ли предмет быть выброшен (работает независимо от isItemAllowed)
+-- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка, должен ли предмет быть выброшен AutoDrop
 local function shouldDropItem(itemName)
     local baseItemName = getBaseItemName(itemName)
     
     -- Если включен ExactModeSync и AutoLoot в режиме Exact
     if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
-        -- В этом режиме мы выкидываем предметы НЕ из списка Exact
+        -- В этом режиме мы выкидываем предметы, которые НЕ находятся в списке Exact Items
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
                 if (type(enabled) == "boolean" and enabled and baseItemName == item) or
                    (type(enabled) == "string" and baseItemName == enabled) then
-                    return false -- Не выкидываем, так как предмет в списке Exact (мы его сохраняем)
+                    return false -- Не выкидываем, так как предмет в списке Exact (мы его оставляем)
                 end
             end
         end
-        return true -- Выкидываем, так как предмет не в списке Exact
+        return true -- Выкидываем, так как предмет НЕ в списке Exact
     end
     
-    -- Обычная проверка по списку ItemsToDrop
+    -- Обычная проверка по списку ItemsToDrop (если ExactModeSync не включен)
     local itemsToDrop = Config.AutoDrop.ItemsToDrop
     if type(itemsToDrop) == "table" then
         for item, shouldDrop in pairs(itemsToDrop) do
@@ -1947,6 +1940,7 @@ local function initializeUI(UI)
                 notify("AutoDrop", "Exact Mode Sync " .. (value and "Enabled" or "Disabled"), true)
             end
         })
+        autoDropSection:SubLabel({ Text = "[ ⁉️ ] When enabled, AutoLoot (Exact mode) collects ALL items, AutoDrop drops items NOT in the Exact list" })
         
         uiElements.AutoDropCheckInterval = autoDropSection:Slider({
             Name = "Check Interval",
@@ -1972,7 +1966,6 @@ local function initializeUI(UI)
             end
         })
         autoDropSection:SubLabel({ Text = "[ ⁉️ ] Only AutoLoot: Drop only after AutoLoot picks up items" })
-        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Exact Mode Sync: When enabled, AutoLoot in Exact mode will pick up items NOT in the Exact list, and AutoDrop will drop them" })
     end
 end
 
