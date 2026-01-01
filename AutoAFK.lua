@@ -12,23 +12,26 @@ local Network = ReplicatedStorage:WaitForChild("Network")
 local ItemsFolder = Network:WaitForChild("Items")
 local MoveItem = ItemsFolder:WaitForChild("MoveItem")
 local EquipItem = ItemsFolder:WaitForChild("EquipItem")
+local SwapItems = ItemsFolder:WaitForChild("SwapItems")
 local Consume = ItemsFolder:WaitForChild("Consume")
 
 -- Конфигурация
 local Config = {
     AutoEat = {
         Enabled = false,
-        HungerThreshold = 50,  -- Порог голода (когда начинаем есть)
-        ThirstThreshold = 50,  -- Порог жажды (когда начинаем пить)
-        CheckInterval = 2,     -- Интервал проверки в секундах
-        Priority = "Both",     -- Приоритет: "Hunger", "Thirst", "Both"
-        UseBestItem = true     -- Использовать лучший предмет для текущей потребности
+        HungerThreshold = 50,
+        ThirstThreshold = 50,
+        CheckInterval = 2,
+        Priority = "Both",
+        UseBestItem = true,
+        SwapWhenFull = true
     }
 }
 
 -- Кэш предметов
 local ItemCache = {}
 local FoodItems = {}
+local notify = print
 
 -- Получение конфигурации еды
 local function getFoodConfig(itemName)
@@ -42,12 +45,10 @@ local function getFoodConfig(itemName)
         return nil
     end
     
-    -- Проверяем, является ли предмет consumable
     local configModule = itemModel:FindFirstChild("Config")
     if configModule and configModule:IsA("ModuleScript") then
         local success, configTable = pcall(require, configModule)
         if success and configTable and configTable.class == "consumable" then
-            -- Получаем FoodConfig
             local foodConfigModule = itemModel:FindFirstChild("FoodConfig")
             if foodConfigModule and foodConfigModule:IsA("ModuleScript") then
                 local success2, foodConfig = pcall(require, foodConfigModule)
@@ -83,9 +84,8 @@ local function scanFoodItems()
                 count = count,
                 hunger = foodConfig.foodConfig.hunger or 0,
                 thirst = foodConfig.foodConfig.thirst or 0,
-                health = foodConfig.foodConfig.health or 0,
-                stamina = foodConfig.foodConfig.stamina or 0,
-                location = "Inventory"
+                location = "Inventory",
+                totalValue = (foodConfig.foodConfig.hunger or 0) + (foodConfig.foodConfig.thirst or 0)
             })
         end
     end
@@ -105,10 +105,9 @@ local function scanFoodItems()
                 count = count,
                 hunger = foodConfig.foodConfig.hunger or 0,
                 thirst = foodConfig.foodConfig.thirst or 0,
-                health = foodConfig.foodConfig.health or 0,
-                stamina = foodConfig.foodConfig.stamina or 0,
                 location = "Toolbar",
-                slot = slot
+                slot = slot,
+                totalValue = (foodConfig.foodConfig.hunger or 0) + (foodConfig.foodConfig.thirst or 0)
             })
         end
     end
@@ -132,8 +131,39 @@ local function findFreeToolbarSlot()
     return nil
 end
 
--- Выбор лучшей еды для текущих потребностей
-local function selectBestFood()
+-- Найти предмет в слоте 9 (последний слот)
+local function findItemInSlot9()
+    for _, itemFolder in ipairs(Toolbar:GetChildren()) do
+        local indexValue = itemFolder:FindFirstChild("Index")
+        if indexValue and indexValue.Value == 9 then
+            return itemFolder
+        end
+    end
+    return nil
+end
+
+-- Замена предмета в слоте 9
+local function swapWithSlot9(foodItem)
+    if not foodItem then
+        return false
+    end
+    
+    local slot9Item = findItemInSlot9()
+    if not slot9Item then
+        return false
+    end
+    
+    local args = {
+        [1] = foodItem.folder,
+        [2] = slot9Item
+    }
+    
+    SwapItems:FireServer(unpack(args))
+    return true
+end
+
+-- Интеллектуальный выбор лучшей еды для текущих потребностей
+local function selectBestFoodForCurrentNeeds()
     local hunger = Data.Hunger.Value
     local thirst = Data.Thirst.Value
     
@@ -146,23 +176,54 @@ local function selectBestFood()
     
     local bestItem = nil
     local bestScore = -math.huge
+    local hungerDeficit = Config.AutoEat.HungerThreshold - hunger
+    local thirstDeficit = Config.AutoEat.ThirstThreshold - thirst
     
     for _, food in ipairs(FoodItems) do
         if food.count > 0 then
             local score = 0
+            local hungerRestored = math.min(food.hunger, hungerDeficit)
+            local thirstRestored = math.min(food.thirst, thirstDeficit)
             
             if Config.AutoEat.Priority == "Hunger" then
-                score = food.hunger * (needHunger and 2 or 0) + food.thirst * (needThirst and 1 or 0)
+                if needHunger then
+                    score = hungerRestored * 2
+                    if needThirst then
+                        score = score + thirstRestored * 0.5
+                    end
+                elseif needThirst then
+                    score = thirstRestored
+                end
             elseif Config.AutoEat.Priority == "Thirst" then
-                score = food.thirst * (needThirst and 2 or 0) + food.hunger * (needHunger and 1 or 0)
+                if needThirst then
+                    score = thirstRestored * 2
+                    if needHunger then
+                        score = score + hungerRestored * 0.5
+                    end
+                elseif needHunger then
+                    score = hungerRestored
+                end
             else -- "Both"
                 if needHunger and needThirst then
-                    score = (food.hunger + food.thirst) * 1.5
+                    local totalDeficit = hungerDeficit + thirstDeficit
+                    local hungerWeight = totalDeficit > 0 and (hungerDeficit / totalDeficit) or 0.5
+                    local thirstWeight = totalDeficit > 0 and (thirstDeficit / totalDeficit) or 0.5
+                    
+                    score = (hungerRestored * hungerWeight * 2) + 
+                            (thirstRestored * thirstWeight * 2)
                 elseif needHunger then
-                    score = food.hunger * 2
+                    score = hungerRestored * 2
                 elseif needThirst then
-                    score = food.thirst * 2
+                    score = thirstRestored * 2
                 end
+            end
+            
+            -- Бонус за эффективность
+            if hungerRestored >= hungerDeficit and needHunger then
+                score = score + 5
+            end
+            if thirstRestored >= thirstDeficit and needThirst then
+                score = score + 5
             end
             
             -- Бонус если уже в тулбаре
@@ -182,14 +243,15 @@ end
 
 -- Использование еды
 local function useFood(foodItem)
-    if not foodItem then return false end
-    
-    local success = false
+    if not foodItem then 
+        return false 
+    end
     
     if foodItem.location == "Inventory" then
-        -- Перемещаем в тулбар
         local freeSlot = findFreeToolbarSlot()
+        
         if freeSlot then
+            -- Перемещаем в свободный слот
             local args = {
                 [1] = foodItem.folder,
                 [2] = "Toolbar",
@@ -197,7 +259,7 @@ local function useFood(foodItem)
             }
             
             MoveItem:FireServer(unpack(args))
-            wait(0.2) -- Ждем перемещения
+            wait(0.2)
             
             -- Экипируем
             local equipArgs = {[1] = freeSlot}
@@ -206,7 +268,25 @@ local function useFood(foodItem)
             
             -- Используем
             Consume:FireServer()
-            success = true
+            return true
+        elseif Config.AutoEat.SwapWhenFull then
+            -- Заменяем предмет в слоте 9
+            if swapWithSlot9(foodItem) then
+                wait(0.3)
+                
+                -- Экипируем новый предмет (всегда слот 9)
+                local equipArgs = {[1] = 9}
+                EquipItem:FireServer(unpack(equipArgs))
+                wait(0.1)
+                
+                -- Используем
+                Consume:FireServer()
+                return true
+            else
+                return false
+            end
+        else
+            return false
         end
     else -- Уже в тулбаре
         if foodItem.slot then
@@ -217,11 +297,11 @@ local function useFood(foodItem)
             
             -- Используем
             Consume:FireServer()
-            success = true
+            return true
         end
     end
     
-    return success
+    return false
 end
 
 -- Основная функция авто-питания
@@ -229,17 +309,18 @@ local function autoEat()
     if not Config.AutoEat.Enabled then return end
     if not LocalPlayer.Character then return end
     
-    -- Обновляем список еды
     scanFoodItems()
     
-    -- Выбираем лучшую еду
-    local bestFood = selectBestFood()
+    if #FoodItems == 0 then
+        return
+    end
+    
+    local bestFood = selectBestFoodForCurrentNeeds()
     
     if bestFood then
         local used = useFood(bestFood)
         if used then
-            print("[AutoEat] Использован предмет: " .. bestFood.name)
-            wait(1) -- Задержка после использования
+            -- Без notify, так как это автоматическое действие
         end
     end
 end
@@ -249,18 +330,17 @@ local function testEat()
     scanFoodItems()
     
     if #FoodItems == 0 then
-        print("[AutoEat] В инвентаре нет еды!")
+        notify("AutoAFK", "No food in inventory!", false)
         return
     end
     
-    -- Используем первый попавшийся предмет
     local testFood = FoodItems[1]
     local used = useFood(testFood)
     
     if used then
-        print("[AutoEat] Тест: использован " .. testFood.name)
+        notify("AutoAFK", "Test: used " .. testFood.name, false)
     else
-        print("[AutoEat] Тест: не удалось использовать предмет")
+        notify("AutoAFK", "Test: failed to use item", false)
     end
 end
 
@@ -279,106 +359,110 @@ local function initializeUI(UI)
     if UI.Tabs and UI.Tabs.Main then
         local afkSection = UI.Tabs.Main:Section({Name = "AutoAFK", Side = "Left"})
         
-        -- Заголовок AutoEat
         afkSection:Header({Name = "AutoEat"})
-        afkSection:SubLabel({Text = "Автоматически ест и пьет при низких показателях"})
         
-        -- Включение/выключение
+        local infoLabel = afkSection:SubLabel({Text = "Loading data..."})
+        
+        -- Toggle с notify
         afkSection:Toggle({
-            Name = "Включить AutoEat",
+            Name = "Enabled",
             Default = Config.AutoEat.Enabled,
             Callback = function(value)
                 Config.AutoEat.Enabled = value
-                print("[AutoEat] " .. (value and "Включен" or "Выключен"))
+                notify("AutoAFK", "AutoEat " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
-        -- Порог голода
+        -- Slider без notify при изменении
         afkSection:Slider({
-            Name = "Порог голода",
+            Name = "Hunger Threshold",
             Minimum = 0,
             Maximum = 100,
+            DisplayMethod = 'Percent',
             Default = Config.AutoEat.HungerThreshold,
             Precision = 0,
             Callback = function(value)
                 Config.AutoEat.HungerThreshold = value
-                print("[AutoEat] Порог голода: " .. value)
             end
         })
         
-        -- Порог жажды
         afkSection:Slider({
-            Name = "Порог жажды",
+            Name = "Thirst Threshold",
             Minimum = 0,
             Maximum = 100,
+            DisplayMethod = 'Percent',
             Default = Config.AutoEat.ThirstThreshold,
             Precision = 0,
             Callback = function(value)
                 Config.AutoEat.ThirstThreshold = value
-                print("[AutoEat] Порог жажды: " .. value)
             end
         })
         
-        -- Интервал проверки
         afkSection:Slider({
-            Name = "Интервал проверки (сек)",
+            Name = "Check Interval (sec)",
             Minimum = 1,
             Maximum = 10,
             Default = Config.AutoEat.CheckInterval,
             Precision = 1,
             Callback = function(value)
                 Config.AutoEat.CheckInterval = value
-                print("[AutoEat] Интервал: " .. value .. " сек")
             end
         })
         
-        -- Приоритет
         afkSection:Dropdown({
-            Name = "Приоритет",
+            Name = "Priority",
             Default = Config.AutoEat.Priority,
             Options = {"Both", "Hunger", "Thirst"},
             Callback = function(value)
                 Config.AutoEat.Priority = value
-                print("[AutoEat] Приоритет: " .. value)
             end
         })
         
-        -- Использовать лучший предмет
+        -- Toggle с notify
         afkSection:Toggle({
-            Name = "Использовать лучший предмет",
+            Name = "Use Best Item",
             Default = Config.AutoEat.UseBestItem,
             Callback = function(value)
                 Config.AutoEat.UseBestItem = value
-                print("[AutoEat] Лучший предмет: " .. (value and "Да" or "Нет"))
+                notify("AutoAFK", "Best item selection " .. (value and "Enabled" or "Disabled"), true)
             end
         })
         
-        -- Разделитель
+        -- Toggle с notify
+        afkSection:Toggle({
+            Name = "Swap When Toolbar Full",
+            Default = Config.AutoEat.SwapWhenFull,
+            Callback = function(value)
+                Config.AutoEat.SwapWhenFull = value
+                notify("AutoAFK", "Toolbar swap " .. (value and "Enabled" or "Disabled"), true)
+            end
+        })
+        
         afkSection:Divider()
         
-        -- Тестовая кнопка
         afkSection:Button({
             Name = "Test Button",
             Callback = testEat
         })
-        afkSection:SubLabel({Text = "Протестировать использование еды"})
+        afkSection:SubLabel({Text = "Test food consumption"})
         
-        -- Информация о текущих показателях
-        local infoLabel = afkSection:SubLabel({Text = "Загрузка данных..."})
-        
-        -- Обновление информации о показателях
+        -- Обновление информации
         local function updateInfo()
             if Data and Data.Hunger and Data.Thirst then
-                infoLabel.Text = string.format("Голод: %d/100 | Жажда: %d/100", 
-                    Data.Hunger.Value, Data.Thirst.Value)
+                local hungerStatus = Data.Hunger.Value < Config.AutoEat.HungerThreshold and "Low" or "OK"
+                local thirstStatus = Data.Thirst.Value < Config.AutoEat.ThirstThreshold and "Low" or "OK"
+                
+                infoLabel:UpdateName(string.format("Hunger: %d/%d (%s) | Thirst: %d/%d (%s) | Food: %d", 
+                    Data.Hunger.Value, Config.AutoEat.HungerThreshold, hungerStatus,
+                    Data.Thirst.Value, Config.AutoEat.ThirstThreshold, thirstStatus,
+                    #FoodItems))
             end
         end
         
-        -- Периодическое обновление
         task.spawn(function()
             while true do
                 updateInfo()
-                wait(1)
+                wait(2)
             end
         end)
     end
@@ -386,37 +470,20 @@ end
 
 -- Инициализация модуля
 function AutoAFK.Init(UI, core, notifyFunc)
-    local notify = notifyFunc or print
+    notify = notifyFunc or print
     
-    -- Запускаем основной цикл
     task.spawn(mainLoop)
     
-    -- Инициализируем UI если он передан
     if UI then
         initializeUI(UI)
-        notify("[AutoAFK] Модуль AutoEat инициализирован")
     end
     
-    -- Подписываемся на изменения инвентаря
-    Inventory.ChildAdded:Connect(function()
-        scanFoodItems()
-    end)
+    Inventory.ChildAdded:Connect(scanFoodItems)
+    Inventory.ChildRemoved:Connect(scanFoodItems)
+    Toolbar.ChildAdded:Connect(scanFoodItems)
+    Toolbar.ChildRemoved:Connect(scanFoodItems)
     
-    Inventory.ChildRemoved:Connect(function()
-        scanFoodItems()
-    end)
-    
-    Toolbar.ChildAdded:Connect(function()
-        scanFoodItems()
-    end)
-    
-    Toolbar.ChildRemoved:Connect(function()
-        scanFoodItems()
-    end)
-    
-    -- Первоначальное сканирование
     scanFoodItems()
-    notify("[AutoAFK] Просканировано предметов: " .. #FoodItems)
     
     return AutoAFK
 end
