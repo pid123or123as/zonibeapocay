@@ -33,8 +33,8 @@ local ItemCache = {}
 local FoodItems = {}
 local notify = print
 
--- Получение конфигурации еды
-local function getFoodConfig(itemName)
+-- Получение конфигурации consumable предметов
+local function getConsumableConfig(itemName)
     if ItemCache[itemName] then
         return ItemCache[itemName]
     end
@@ -49,17 +49,50 @@ local function getFoodConfig(itemName)
     if configModule and configModule:IsA("ModuleScript") then
         local success, configTable = pcall(require, configModule)
         if success and configTable and configTable.class == "consumable" then
+            -- Проверяем FoodConfig
             local foodConfigModule = itemModel:FindFirstChild("FoodConfig")
+            local foodConfig = nil
             if foodConfigModule and foodConfigModule:IsA("ModuleScript") then
-                local success2, foodConfig = pcall(require, foodConfigModule)
-                if success2 and foodConfig then
-                    ItemCache[itemName] = {
-                        class = "consumable",
-                        foodConfig = foodConfig
-                    }
-                    return ItemCache[itemName]
+                local success2, foodConfigTable = pcall(require, foodConfigModule)
+                if success2 and foodConfigTable then
+                    foodConfig = foodConfigTable
                 end
             end
+            
+            -- Проверяем WaterConfig
+            local waterConfigModule = itemModel:FindFirstChild("WaterConfig")
+            local waterConfig = nil
+            if waterConfigModule and waterConfigModule:IsA("ModuleScript") then
+                local success3, waterConfigTable = pcall(require, waterConfigModule)
+                if success3 and waterConfigTable then
+                    waterConfig = waterConfigTable
+                end
+            end
+            
+            -- Объединяем конфиги
+            local consumableConfig = {
+                hunger = 0,
+                thirst = 0,
+                health = 0,
+                stamina = 0
+            }
+            
+            if foodConfig then
+                consumableConfig.hunger = foodConfig.hunger or 0
+                consumableConfig.thirst = foodConfig.thirst or 0
+                consumableConfig.health = foodConfig.health or 0
+                consumableConfig.stamina = foodConfig.stamina or 0
+            end
+            
+            if waterConfig then
+                consumableConfig.thirst = waterConfig.thirst or 0
+            end
+            
+            ItemCache[itemName] = {
+                class = "consumable",
+                config = consumableConfig
+            }
+            return ItemCache[itemName]
         end
     end
     
@@ -67,14 +100,24 @@ local function getFoodConfig(itemName)
     return nil
 end
 
--- Сбор информации о доступной еде
+-- Проверяем, восстанавливает ли предмет голод или жажду
+local function isHungerOrThirstItem(consumableConfig)
+    if not consumableConfig or not consumableConfig.config then
+        return false
+    end
+    
+    local config = consumableConfig.config
+    return (config.hunger or 0) > 0 or (config.thirst or 0) > 0
+end
+
+-- Сбор информации о доступной еде и воде
 local function scanFoodItems()
     FoodItems = {}
     
     -- Сканируем инвентарь
     for _, itemFolder in ipairs(Inventory:GetChildren()) do
-        local foodConfig = getFoodConfig(itemFolder.Name)
-        if foodConfig then
+        local consumableConfig = getConsumableConfig(itemFolder.Name)
+        if consumableConfig and isHungerOrThirstItem(consumableConfig) then
             local countValue = itemFolder:FindFirstChild("Count")
             local count = countValue and countValue.Value or 1
             
@@ -82,18 +125,18 @@ local function scanFoodItems()
                 folder = itemFolder,
                 name = itemFolder.Name,
                 count = count,
-                hunger = foodConfig.foodConfig.hunger or 0,
-                thirst = foodConfig.foodConfig.thirst or 0,
+                hunger = consumableConfig.config.hunger or 0,
+                thirst = consumableConfig.config.thirst or 0,
                 location = "Inventory",
-                totalValue = (foodConfig.foodConfig.hunger or 0) + (foodConfig.foodConfig.thirst or 0)
+                totalValue = (consumableConfig.config.hunger or 0) + (consumableConfig.config.thirst or 0)
             })
         end
     end
     
     -- Сканируем тулбар
     for _, itemFolder in ipairs(Toolbar:GetChildren()) do
-        local foodConfig = getFoodConfig(itemFolder.Name)
-        if foodConfig then
+        local consumableConfig = getConsumableConfig(itemFolder.Name)
+        if consumableConfig and isHungerOrThirstItem(consumableConfig) then
             local countValue = itemFolder:FindFirstChild("Count")
             local count = countValue and countValue.Value or 1
             local indexValue = itemFolder:FindFirstChild("Index")
@@ -103,11 +146,11 @@ local function scanFoodItems()
                 folder = itemFolder,
                 name = itemFolder.Name,
                 count = count,
-                hunger = foodConfig.foodConfig.hunger or 0,
-                thirst = foodConfig.foodConfig.thirst or 0,
+                hunger = consumableConfig.config.hunger or 0,
+                thirst = consumableConfig.config.thirst or 0,
                 location = "Toolbar",
                 slot = slot,
-                totalValue = (foodConfig.foodConfig.hunger or 0) + (foodConfig.foodConfig.thirst or 0)
+                totalValue = (consumableConfig.config.hunger or 0) + (consumableConfig.config.thirst or 0)
             })
         end
     end
@@ -176,11 +219,11 @@ local function selectBestFoodForCurrentNeeds()
     
     local bestItem = nil
     local bestScore = -math.huge
-    local hungerDeficit = Config.AutoEat.HungerThreshold - hunger
-    local thirstDeficit = Config.AutoEat.ThirstThreshold - thirst
+    local hungerDeficit = math.max(0, Config.AutoEat.HungerThreshold - hunger)
+    local thirstDeficit = math.max(0, Config.AutoEat.ThirstThreshold - thirst)
     
     for _, food in ipairs(FoodItems) do
-        if food.count > 0 then
+        if food.count > 0 and (food.hunger > 0 or food.thirst > 0) then
             local score = 0
             local hungerRestored = math.min(food.hunger, hungerDeficit)
             local thirstRestored = math.min(food.thirst, thirstDeficit)
@@ -218,17 +261,22 @@ local function selectBestFoodForCurrentNeeds()
                 end
             end
             
-            -- Бонус за эффективность
-            if hungerRestored >= hungerDeficit and needHunger then
+            -- Бонус за эффективность (полностью удовлетворяет потребность)
+            if hungerRestored >= hungerDeficit and needHunger and hungerDeficit > 0 then
                 score = score + 5
             end
-            if thirstRestored >= thirstDeficit and needThirst then
+            if thirstRestored >= thirstDeficit and needThirst and thirstDeficit > 0 then
                 score = score + 5
             end
             
             -- Бонус если уже в тулбаре
             if food.location == "Toolbar" then
                 score = score * 1.2
+            end
+            
+            -- Штраф за низкое количество
+            if food.count == 1 then
+                score = score * 0.9
             end
             
             if score > bestScore then
@@ -241,7 +289,7 @@ local function selectBestFoodForCurrentNeeds()
     return bestItem
 end
 
--- Использование еды
+-- Использование еды/воды
 local function useFood(foodItem)
     if not foodItem then 
         return false 
@@ -330,7 +378,7 @@ local function testEat()
     scanFoodItems()
     
     if #FoodItems == 0 then
-        notify("AutoAFK", "No food in inventory!", false)
+        notify("AutoAFK", "No food or water in inventory!", false)
         return
     end
     
@@ -444,18 +492,26 @@ local function initializeUI(UI)
             Name = "Test Button",
             Callback = testEat
         })
-        afkSection:SubLabel({Text = "Test food consumption"})
+        afkSection:SubLabel({Text = "Test food/water consumption"})
         
         -- Обновление информации
         local function updateInfo()
             if Data and Data.Hunger and Data.Thirst then
                 local hungerStatus = Data.Hunger.Value < Config.AutoEat.HungerThreshold and "Low" or "OK"
                 local thirstStatus = Data.Thirst.Value < Config.AutoEat.ThirstThreshold and "Low" or "OK"
+                local validFoodCount = 0
                 
-                infoLabel:UpdateName(string.format("Hunger: %d/%d (%s) | Thirst: %d/%d (%s) | Food: %d", 
+                -- Подсчитываем только валидные предметы
+                for _, food in ipairs(FoodItems) do
+                    if food.hunger > 0 or food.thirst > 0 then
+                        validFoodCount = validFoodCount + 1
+                    end
+                end
+                
+                infoLabel:UpdateName(string.format("Hunger: %d/%d (%s) | Thirst: %d/%d (%s) | Items: %d", 
                     Data.Hunger.Value, Config.AutoEat.HungerThreshold, hungerStatus,
                     Data.Thirst.Value, Config.AutoEat.ThirstThreshold, thirstStatus,
-                    #FoodItems))
+                    validFoodCount))
             end
         end
         
