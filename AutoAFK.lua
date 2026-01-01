@@ -45,59 +45,40 @@ local OriginalSlot = nil
 local IsHealingInProgress = false
 local LastEquippedSlot = nil
 
--- Флаги для отслеживания вызовов
-local isScriptCall = false
-local equipHookInstalled = false
-
--- Проверяем наличие функций эксплоита
-local exploit = {
-    hookfunction = hookfunction or function(f, new) return f end,
-    checkcaller = checkcaller or function() 
-        -- Если checkcaller недоступен, используем isScriptCall
-        return isScriptCall 
-    end,
-    is_protosmasher_closure = is_protosmasher_closure or function() return false end
-}
-
--- HOOK для EquipItem с checkcaller
-local originalEquipFireServer
-local function setupEquipHook()
-    if not exploit.hookfunction or equipHookInstalled then
-        return false
+-- Используем функции эксплоита для hook и checkcaller
+local function isScriptCaller()
+    if checkcaller then
+        return checkcaller()
     end
-    
-    originalEquipFireServer = EquipItem.FireServer
-    
-    EquipItem.FireServer = function(self, slot, ...)
-        -- Проверяем, вызвано ли скриптом через checkcaller
-        local calledByScript = exploit.checkcaller()
-        
-        -- Если вызов НЕ от скрипта и слот - число, сохраняем
-        if not calledByScript and type(slot) == "number" then
-            OriginalSlot = slot
-            LastEquippedSlot = slot
-        end
-        
-        -- Вызываем оригинальную функцию
-        return originalEquipFireServer(self, slot, ...)
-    end
-    
-    equipHookInstalled = true
-    return true
+    return false
 end
 
--- Альтернатива: прослушка через Connect для Roblox events
-local function setupEquipListener()
-    local connection
-    if EquipItem.OnClientEvent then
-        connection = EquipItem.OnClientEvent:Connect(function(slot)
-            if type(slot) == "number" and not isScriptCall then
+-- Hook для EquipItem через hookfunction или hookmetamethod
+local originalEquipFireServer
+local function setupEquipHook()
+    -- Проверяем доступные функции эксплоита
+    if hookfunction then
+        originalEquipFireServer = EquipItem.FireServer
+        hookfunction(EquipItem.FireServer, function(self, slot, ...)
+            if not isScriptCaller() and type(slot) == "number" then
                 OriginalSlot = slot
                 LastEquippedSlot = slot
             end
+            return originalEquipFireServer(self, slot, ...)
+        end)
+    elseif hookmetamethod then
+        -- Альтернативный способ через hookmetamethod
+        originalEquipFireServer = hookmetamethod(game, "__namecall", function(self, ...)
+            if self == EquipItem and getnamecallmethod() == "FireServer" then
+                local args = {...}
+                if not isScriptCaller() and type(args[1]) == "number" then
+                    OriginalSlot = args[1]
+                    LastEquippedSlot = args[1]
+                end
+            end
+            return originalEquipFireServer(self, ...)
         end)
     end
-    return connection
 end
 
 -- Получение конфигурации consumable предметов
@@ -359,36 +340,23 @@ local function moveToInventory(itemFolder)
     return true
 end
 
--- Восстановить оригинальный слот с использованием checkcaller
+-- Восстановить оригинальный слот
 local function restoreOriginalSlot()
     if not OriginalSlot or not Config.AutoHeal.ReturnToOriginalSlot or IsHealingInProgress then
         return false
     end
     
-    -- Устанавливаем флаг, что вызов от скрипта
-    isScriptCall = true
-    
     local success = false
     
-    -- Ищем предмет в сохраненном слоте
     for _, itemFolder in ipairs(Toolbar:GetChildren()) do
         local indexValue = itemFolder:FindFirstChild("Index")
         if indexValue and indexValue.Value == OriginalSlot then
-            -- Экипируем с проверкой через pcall
-            local equipSuccess = pcall(function()
-                EquipItem:FireServer(OriginalSlot)
-            end)
-            
-            if equipSuccess then
-                LastEquippedSlot = OriginalSlot
-                success = true
-            end
+            EquipItem:FireServer(OriginalSlot)
+            LastEquippedSlot = OriginalSlot
+            success = true
             break
         end
     end
-    
-    -- Сбрасываем флаг
-    isScriptCall = false
     
     return success
 end
@@ -520,7 +488,7 @@ local function selectBestHealItem()
     return bestItem
 end
 
--- Использование еды/воды с использованием checkcaller
+-- Использование еды/воды
 local function useFood(foodItem)
     if not foodItem then 
         return false 
@@ -539,68 +507,53 @@ local function useFood(foodItem)
             MoveItem:FireServer(unpack(args))
             wait(0.2)
             
-            -- Устанавливаем флаг для checkcaller
-            isScriptCall = true
-            local success = pcall(function()
-                EquipItem:FireServer(freeSlot)
-            end)
-            isScriptCall = false
+            EquipItem:FireServer(freeSlot)
+            wait(0.1)
             
-            if success then
-                wait(0.1)
-                Consume:FireServer()
-                return true
-            end
+            Consume:FireServer()
+            return true
         elseif Config.AutoEat.SwapWhenFull then
             if swapWithSlot9(foodItem) then
                 wait(0.3)
                 
-                isScriptCall = true
-                local success = pcall(function()
-                    EquipItem:FireServer(9)
-                end)
-                isScriptCall = false
+                EquipItem:FireServer(9)
+                wait(0.1)
                 
-                if success then
-                    wait(0.1)
-                    Consume:FireServer()
-                    return true
-                end
+                Consume:FireServer()
+                return true
+            else
+                return false
             end
+        else
+            return false
         end
     else
         if foodItem.slot then
-            isScriptCall = true
-            local success = pcall(function()
-                EquipItem:FireServer(foodItem.slot)
-            end)
-            isScriptCall = false
+            EquipItem:FireServer(foodItem.slot)
+            wait(0.1)
             
-            if success then
-                wait(0.1)
-                Consume:FireServer()
-                return true
-            end
+            Consume:FireServer()
+            return true
         end
     end
     
     return false
 end
 
--- Использование лечебного предмета с использованием checkcaller
+-- Использование лечебного предмета
 local function useHealItem(healItem)
     if not healItem or IsHealingInProgress then
         return false
     end
     
     IsHealingInProgress = true
+    
     local success = false
     
     if healItem.location == "Inventory" then
         local freeSlot = findFreeToolbarSlot()
         
         if freeSlot then
-            -- Перемещаем в тулбар
             local args = {
                 [1] = healItem.folder,
                 [2] = "Toolbar",
@@ -610,60 +563,25 @@ local function useHealItem(healItem)
             MoveItem:FireServer(unpack(args))
             wait(0.2)
             
-            -- Экипируем с флагом для checkcaller
-            isScriptCall = true
-            local equipSuccess = pcall(function()
-                EquipItem:FireServer(freeSlot)
-            end)
-            isScriptCall = false
+            EquipItem:FireServer(freeSlot)
+            wait(0.1)
             
-            if equipSuccess then
-                wait(0.1)
-                Consume:FireServer()
-                wait(0.2)
-                
-                -- Возвращаем в инвентарь и восстанавливаем слот
-                if Config.AutoHeal.ReturnToOriginalSlot then
-                    moveToInventory(healItem.folder)
-                    restoreOriginalSlot()
-                end
-                
-                success = true
+            Consume:FireServer()
+            wait(0.2)
+            
+            if Config.AutoHeal.ReturnToOriginalSlot then
+                moveToInventory(healItem.folder)
+                restoreOriginalSlot()
             end
+            
+            success = true
         elseif Config.AutoHeal.SwapWhenFull then
             if swapWithSlot9(healItem) then
                 wait(0.3)
                 
-                isScriptCall = true
-                local equipSuccess = pcall(function()
-                    EquipItem:FireServer(9)
-                end)
-                isScriptCall = false
-                
-                if equipSuccess then
-                    wait(0.1)
-                    Consume:FireServer()
-                    wait(0.2)
-                    
-                    if Config.AutoHeal.ReturnToOriginalSlot then
-                        moveToInventory(healItem.folder)
-                        restoreOriginalSlot()
-                    end
-                    
-                    success = true
-                end
-            end
-        end
-    else
-        if healItem.slot then
-            isScriptCall = true
-            local equipSuccess = pcall(function()
-                EquipItem:FireServer(healItem.slot)
-            end)
-            isScriptCall = false
-            
-            if equipSuccess then
+                EquipItem:FireServer(9)
                 wait(0.1)
+                
                 Consume:FireServer()
                 wait(0.2)
                 
@@ -674,6 +592,21 @@ local function useHealItem(healItem)
                 
                 success = true
             end
+        end
+    else
+        if healItem.slot then
+            EquipItem:FireServer(healItem.slot)
+            wait(0.1)
+            
+            Consume:FireServer()
+            wait(0.2)
+            
+            if Config.AutoHeal.ReturnToOriginalSlot then
+                moveToInventory(healItem.folder)
+                restoreOriginalSlot()
+            end
+            
+            success = true
         end
     end
     
@@ -985,7 +918,6 @@ function AutoAFK.Init(UI, core, notifyFunc)
     
     -- Настраиваем hook для отслеживания EquipItem
     setupEquipHook()
-    setupEquipListener()
     
     -- Запускаем основной цикл
     task.spawn(mainLoop)
