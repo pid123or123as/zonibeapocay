@@ -786,7 +786,7 @@ local function initializeUI(UI)
             Minimum = 0.1,
             Maximum = 2,
             Default = Config.AutoHeal.CheckInterval,
-            Precision = 0.1,
+            Precision = 1,
             Callback = function(value)
                 Config.AutoHeal.CheckInterval = value
             end
