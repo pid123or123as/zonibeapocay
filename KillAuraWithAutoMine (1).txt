@@ -1616,7 +1616,7 @@ local function initializeUI(UI)
                 if not value then clearKillAuraHighlights(nil) end
                 notify("KillAura", "KillAura " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'KillAuraEnabled')
+        }, 'AuraEnabled')
         
         uiElements.KillAuraMaxDistance = killAuraSection:Slider({
             Name = "Max Distance",
@@ -1629,7 +1629,7 @@ local function initializeUI(UI)
                 clearKillAuraHighlights(Cache.CurrentTarget)
                 notify("KillAura", "Max Distance set to: " .. value, false)
             end
-        }, 'KillAuraMaxDistance')
+        }, 'AuraMaxDist')
         
         uiElements.KillAuraHighlightEnabled = killAuraSection:Toggle({
             Name = "Highlight Enabled",
@@ -1639,7 +1639,7 @@ local function initializeUI(UI)
                 if not value then clearKillAuraHighlights(nil) end
                 notify("KillAura", "Highlight " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'KillAuraHighlightEnabled')
+        }, 'AuraHighEnabled')
         
         uiElements.KillAuraHighlightColor = killAuraSection:Colorpicker({
             Name = "Highlight Color",
@@ -1648,7 +1648,7 @@ local function initializeUI(UI)
                 Config.KillAura.HighlightColor = value
                 notify("KillAura", "Highlight Color updated", false)
             end
-        }, 'KillAuraHighlightColor')
+        }, 'AuraHighColor')
         killAuraSection:Divider()
         uiElements.KillAuraMinusUseRate = killAuraSection:Slider({
             Name = "Minus UseRate",
@@ -1660,7 +1660,7 @@ local function initializeUI(UI)
                 Config.KillAura.MinusUseRate = value
                 notify("KillAura", "Minus Use Rate set to: " .. value, false)
             end
-        }, 'KillAuraMinusUseRate')
+        }, 'AuraUseRate')
         killAuraSection:SubLabel({ Text = "[ ⁉️ ] Reduces the delay before the next KillAura attack" })
         killAuraSection:Divider()
         
@@ -1675,7 +1675,7 @@ local function initializeUI(UI)
                 Config.AutoMine.Enabled = value
                 notify("AutoMine", "AutoMine " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'AutoMineEnabled')
+        }, 'MineEnabled')
         
         uiElements.AutoMineDistanceLimit = autoMineSection:Slider({
             Name = "Max Distance",
@@ -1688,7 +1688,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Resources = false
                 notify("AutoMine", "Max Distance set to: " .. value, false)
             end
-        }, 'AutoMineDistanceLimit')
+        }, 'MineDistLimit')
         autoMineSection:Divider()
         uiElements.AutoMineCheckInterval = autoMineSection:Slider({
             Name = "Check Interval",
@@ -1700,7 +1700,7 @@ local function initializeUI(UI)
                 Config.AutoMine.CheckInterval = value
                 notify("AutoMine", "Check Interval set to: " .. value, false)
             end
-        }, 'AutoMineCheckInterval')
+        }, 'MineCheckInt')
         autoMineSection:Divider()
         uiElements.AutoMineHighlightEnabled = autoMineSection:Toggle({
             Name = "Highlight Enabled",
@@ -1709,7 +1709,7 @@ local function initializeUI(UI)
                 Config.AutoMine.HighlightEnabled = value
                 notify("AutoMine", "Highlight " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'AutoMineHighlightEnabled')
+        }, 'MineHighEnabled')
         
         uiElements.AutoMineHighlightColor = autoMineSection:Colorpicker({
             Name = "Highlight Color",
@@ -1718,7 +1718,7 @@ local function initializeUI(UI)
                 Config.AutoMine.HighlightColor = value
                 notify("AutoMine", "Highlight Color updated", false)
             end
-        }, 'AutoMineHighlightColor')
+        }, 'MineHighlightColor')
         
         uiElements.AutoMineMode = autoMineSection:Dropdown({
             Name = "Mode",
@@ -1730,7 +1730,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Resources = false
                 notify("AutoMine", "Mode set to: " .. value, false)
             end
-        }, 'AutoMineMode')
+        }, 'MineMode')
         
         uiElements.AutoMinePrioritizeResources = autoMineSection:Dropdown({
             Name = "Prioritize Resources",
@@ -1741,7 +1741,7 @@ local function initializeUI(UI)
                 Config.AutoMine.PrioritizeResources = value
                 notify("AutoMine", "Prioritize Resources set to: " .. value, false)
             end
-        }, 'AutoMinePrioritizeResources')
+        }, 'PrioritResources')
         autoMineSection:Divider()
         uiElements.AutoMineZombieAlertEnabled = autoMineSection:Toggle({
             Name = "Zombie Alert",
@@ -1762,7 +1762,7 @@ local function initializeUI(UI)
                 Config.AutoMine.ZombieAlert_Radius = value
                 notify("AutoMine", "Zombie Alert Radius set to: " .. value, false)
             end
-        }, 'AutoMineZombieAlertRadius')
+        }, 'ZombieAlertRadius')
         autoMineSection:Divider()
         uiElements.AutoMineGridCellSize = autoMineSection:Slider({
             Name = "GridCellSize",
@@ -1775,7 +1775,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Resources = false
                 notify("AutoMine", "Grid Cell Size set to: " .. value, false)
             end
-        }, 'AutoMineGridCellSize')
+        }, 'GridCellSize')
         autoMineSection:SubLabel({ Text = "[❗] Not recommend to change" })
         
         local autoLootSection = UI.Tabs.Main:Section({ Name = "AutoLoot", Side = "Right" })
@@ -1797,7 +1797,7 @@ local function initializeUI(UI)
                 end
                 notify("AutoLoot", "AutoLoot " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'EnabledLoot')
         
         uiElements.AutoLootMaxDistance = autoLootSection:Slider({
             Name = "Max Distance",
@@ -1810,7 +1810,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Loot = false
                 notify("AutoLoot", "Max Distance set to: " .. value, false)
             end
-        })
+        }, 'MaxDistLoot')
         autoLootSection:Divider()
         
         uiElements.AutoLootCheckInterval = autoLootSection:Slider({
@@ -1823,7 +1823,7 @@ local function initializeUI(UI)
                 Config.AutoLoot.CheckInterval = value
                 notify("AutoLoot", "Check Interval set to: " .. value, false)
             end
-        })
+        }, 'CheckIntLoot')
         autoLootSection:Divider()
         
         uiElements.AutoLootValidationDelay = autoLootSection:Slider({
@@ -1836,7 +1836,7 @@ local function initializeUI(UI)
                 Config.AutoLoot.ValidationDelay = value
                 notify("AutoLoot", "Validation Delay set to: " .. value, false)
             end
-        })
+        }, 'ValidDelay')
         autoLootSection:SubLabel({ Text = "[ ⁉️ ] Delay for validating items in inventory" })
         autoLootSection:Divider()
         
@@ -1853,7 +1853,7 @@ local function initializeUI(UI)
                 end
                 notify("AutoLoot", "Highlight " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'Loothighenabled')
         
         uiElements.AutoLootHighlightColor = autoLootSection:Colorpicker({
             Name = "Highlight Color",
@@ -1862,7 +1862,7 @@ local function initializeUI(UI)
                 Config.AutoLoot.HighlightColor = value
                 notify("AutoLoot", "Highlight Color updated", false)
             end
-        })
+        }, 'HighlightLoot')
         autoLootSection:Divider()
         
         uiElements.AutoLootMode = autoLootSection:Dropdown({
@@ -1875,7 +1875,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Loot = false
                 notify("AutoLoot", "Mode set to: " .. value, false)
             end
-        })
+        }, 'ModeLoot')
         autoLootSection:SubLabel({ Text = "[ ⁉️ ] None: All items, Exact: Only selected, Exclude: All except selected" })
         
         uiElements.AutoLootLootCrates = autoLootSection:Dropdown({
@@ -1889,7 +1889,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Loot = false
                 notify("AutoLoot", "Loot Crates updated", false)
             end
-        })
+        }, 'LootCratesLoot')
         
         local itemOptions = {}
         for _, item in ipairs(Items:GetChildren()) do
@@ -1911,7 +1911,7 @@ local function initializeUI(UI)
                 Cache.CacheValid.Loot = false
                 notify("AutoLoot", "Items List updated", false)
             end
-        })
+        }, 'ItemsListLoot')
         autoLootSection:SubLabel({ Text = "[ ⁉️ ] Select items for Exact or Exclude mode" })
         
         local autoDropSection = UI.Tabs.Main:Section({ Name = "AutoDrop", Side = "Left" })
@@ -1925,7 +1925,7 @@ local function initializeUI(UI)
                 Config.AutoDrop.Enabled = value
                 notify("AutoDrop", "AutoDrop " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'EnabledDrop')
         
         uiElements.AutoDropOnlyAutoLoot = autoDropSection:Toggle({
             Name = "Only AutoLoot",
@@ -1934,7 +1934,7 @@ local function initializeUI(UI)
                 Config.AutoDrop.OnlyAutoLoot = value
                 notify("AutoDrop", "Only AutoLoot " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'OnlyAutoLoot')
         
         uiElements.AutoDropExactModeSync = autoDropSection:Toggle({
             Name = "Exact Mode Sync",
@@ -1943,7 +1943,7 @@ local function initializeUI(UI)
                 Config.AutoDrop.ExactModeSync = value
                 notify("AutoDrop", "Exact Mode Sync " .. (value and "Enabled" or "Disabled"), true)
             end
-        })
+        }, 'ExactSync')
         
         uiElements.AutoDropCheckInterval = autoDropSection:Slider({
             Name = "Check Interval",
@@ -1955,7 +1955,7 @@ local function initializeUI(UI)
                 Config.AutoDrop.CheckInterval = value
                 notify("AutoDrop", "Check Interval set to: " .. value, false)
             end
-        })
+        }, 'CheckIntDrop')
         
         uiElements.AutoDropItemsList = autoDropSection:Dropdown({
             Name = "Items to Drop",
@@ -1967,7 +1967,7 @@ local function initializeUI(UI)
                 Config.AutoDrop.ItemsToDrop = value
                 notify("AutoDrop", "Items to Drop updated", false)
             end
-        })
+        }, 'ItemsDrop')
         autoDropSection:SubLabel({ Text = "[ ⁉️ ] Only AutoLoot: Drop only after AutoLoot picks up items" })
         autoDropSection:SubLabel({ Text = "[ ⁉️ ] Exact Mode Sync: AutoLoot (Exact mode) collects ALL items, AutoDrop drops items NOT in the Exact list" })
     end
