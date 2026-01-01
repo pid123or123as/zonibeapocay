@@ -674,7 +674,7 @@ end
 local function initializeUI(UI)
     if UI.Tabs and UI.Tabs.Main then
         -- Секция AutoEat (левая сторона)
-        local eatSection = UI.Tabs.Main:Section({Name = "🍗 AutoEat", Side = "Left"})
+        local eatSection = UI.Tabs.Main:Section({Name = "AutoEat", Side = "Left"})
         
         local eatInfoLabel = eatSection:SubLabel({Text = "Loading food data..."})
         
@@ -756,7 +756,7 @@ local function initializeUI(UI)
         })
         
         -- Секция AutoHeal (левая сторона)
-        local healSection = UI.Tabs.Main:Section({Name = "💊 AutoHeal", Side = "Left"})
+        local healSection = UI.Tabs.Main:Section({Name = "AutoHeal", Side = "Left"})
         
         local healInfoLabel = healSection:SubLabel({Text = "Loading health data..."})
         
