@@ -132,14 +132,32 @@ local notify = print
 local Core = nil
 
 -- Функция для автоматической синхронизации конфигурации
+-- Функция для автоматической синхронизации конфигурации
 local function SynchronizeConfigValues()
     if not uiElements then return end
     
     -- Синхронизация KillAura
+    if uiElements.KillAuraEnabled and uiElements.KillAuraEnabled.GetState then
+        local uiState = uiElements.KillAuraEnabled:GetState()
+        if uiState ~= Config.KillAura.Enabled then
+            Config.KillAura.Enabled = uiState
+            if not uiState then clearKillAuraHighlights(nil) end
+        end
+    end
+    
     if uiElements.KillAuraMaxDistance and uiElements.KillAuraMaxDistance.GetValue then
         local uiValue = uiElements.KillAuraMaxDistance:GetValue()
         if uiValue ~= Config.KillAura.MaxDistance then
             Config.KillAura.MaxDistance = uiValue
+            clearKillAuraHighlights(Cache.CurrentTarget)
+        end
+    end
+    
+    if uiElements.KillAuraHighlightEnabled and uiElements.KillAuraHighlightEnabled.GetState then
+        local uiState = uiElements.KillAuraHighlightEnabled:GetState()
+        if uiState ~= Config.KillAura.HighlightEnabled then
+            Config.KillAura.HighlightEnabled = uiState
+            if not uiState then clearKillAuraHighlights(nil) end
         end
     end
     
@@ -148,6 +166,23 @@ local function SynchronizeConfigValues()
     end
     
     -- Синхронизация AutoMine
+    if uiElements.AutoMineEnabled and uiElements.AutoMineEnabled.GetState then
+        local uiState = uiElements.AutoMineEnabled:GetState()
+        if uiState ~= Config.AutoMine.Enabled then
+            Config.AutoMine.Enabled = uiState
+            if not uiState then
+                if Cache.CurrentResource then
+                    removeHighlight(Cache.CurrentResource.obj, "AutoMine")
+                    Cache.CurrentResource = nil
+                end
+                if Core and Core.TheApocalypse then
+                    Core.TheApocalypse.AutoMineOreName = nil
+                    Core.TheApocalypse.AutoMineHealthOre = nil
+                end
+            end
+        end
+    end
+    
     if uiElements.AutoMineDistanceLimit and uiElements.AutoMineDistanceLimit.GetValue then
         local uiValue = uiElements.AutoMineDistanceLimit:GetValue()
         if uiValue ~= Config.AutoMine.DistanceLimit then
@@ -158,6 +193,14 @@ local function SynchronizeConfigValues()
     
     if uiElements.AutoMineCheckInterval and uiElements.AutoMineCheckInterval.GetValue then
         Config.AutoMine.CheckInterval = uiElements.AutoMineCheckInterval:GetValue()
+    end
+    
+    if uiElements.AutoMineHighlightEnabled and uiElements.AutoMineHighlightEnabled.GetState then
+        Config.AutoMine.HighlightEnabled = uiElements.AutoMineHighlightEnabled:GetState()
+    end
+    
+    if uiElements.AutoMineZombieAlertEnabled and uiElements.AutoMineZombieAlertEnabled.GetState then
+        Config.AutoMine.ZombieAlert_Enabled = uiElements.AutoMineZombieAlertEnabled:GetState()
     end
     
     if uiElements.AutoMineZombieAlertRadius and uiElements.AutoMineZombieAlertRadius.GetValue then
@@ -173,6 +216,21 @@ local function SynchronizeConfigValues()
     end
     
     -- Синхронизация AutoLoot
+    if uiElements.AutoLootEnabled and uiElements.AutoLootEnabled.GetState then
+        local uiState = uiElements.AutoLootEnabled:GetState()
+        if uiState ~= Config.AutoLoot.Enabled then
+            Config.AutoLoot.Enabled = uiState
+            if not uiState then
+                clearAutoLootHighlights(nil)
+                if Core and Core.TheApocalypse then
+                    Core.TheApocalypse.AutoLootItemName = nil
+                end
+            else
+                Cache.CacheValid.Loot = false
+            end
+        end
+    end
+    
     if uiElements.AutoLootMaxDistance and uiElements.AutoLootMaxDistance.GetValue then
         local uiValue = uiElements.AutoLootMaxDistance:GetValue()
         if uiValue ~= Config.AutoLoot.MaxDistance then
@@ -189,7 +247,33 @@ local function SynchronizeConfigValues()
         Config.AutoLoot.ValidationDelay = uiElements.AutoLootValidationDelay:GetValue()
     end
     
+    if uiElements.AutoLootHighlightEnabled and uiElements.AutoLootHighlightEnabled.GetState then
+        local uiState = uiElements.AutoLootHighlightEnabled:GetState()
+        if uiState ~= Config.AutoLoot.HighlightEnabled then
+            Config.AutoLoot.HighlightEnabled = uiState
+            if not uiState then
+                clearAutoLootHighlights(nil)
+            end
+        end
+    end
+    
     -- Синхронизация AutoDrop
+    if uiElements.AutoDropEnabled and uiElements.AutoDropEnabled.GetState then
+        Config.AutoDrop.Enabled = uiElements.AutoDropEnabled:GetState()
+    end
+    
+    if uiElements.AutoDropOnlyAutoLoot and uiElements.AutoDropOnlyAutoLoot.GetState then
+        Config.AutoDrop.OnlyAutoLoot = uiElements.AutoDropOnlyAutoLoot:GetState()
+    end
+    
+    if uiElements.AutoDropExactModeSync and uiElements.AutoDropExactModeSync.GetState then
+        local uiState = uiElements.AutoDropExactModeSync:GetState()
+        if uiState ~= Config.AutoDrop.ExactModeSync then
+            Config.AutoDrop.ExactModeSync = uiState
+            Cache.CacheValid.Loot = false
+        end
+    end
+    
     if uiElements.AutoDropCheckInterval and uiElements.AutoDropCheckInterval.GetValue then
         Config.AutoDrop.CheckInterval = uiElements.AutoDropCheckInterval:GetValue()
     end
