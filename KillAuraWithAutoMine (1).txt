@@ -149,7 +149,6 @@ local function SynchronizeConfigValues()
         local uiValue = uiElements.KillAuraMaxDistance:GetValue()
         if uiValue ~= Config.KillAura.MaxDistance then
             Config.KillAura.MaxDistance = uiValue
-            clearKillAuraHighlights(Cache.CurrentTarget)
         end
     end
     
@@ -1692,7 +1691,7 @@ local function initializeUI(UI)
         killAuraSection:Header({ Name = "KillAura" })
         killAuraSection:SubLabel({ Text = "Automates melee attacks on nearby enemies" })
         
-        uiElements.KillAuraEnabled = killAuraSection:Toggle({
+        killAuraSection:Toggle({
             Name = "Enabled",
             Default = Config.KillAura.Enabled,
             Callback = function(value)
@@ -1715,7 +1714,7 @@ local function initializeUI(UI)
             end
         }, 'AuraMaxDist')
         
-        uiElements.KillAuraHighlightEnabled = killAuraSection:Toggle({
+        killAuraSection:Toggle({
             Name = "Highlight Enabled",
             Default = Config.KillAura.HighlightEnabled,
             Callback = function(value)
@@ -1752,7 +1751,7 @@ local function initializeUI(UI)
         autoMineSection:Header({ Name = "AutoMine" })
         autoMineSection:SubLabel({ Text = "Automates resource farm" })
         
-        uiElements.AutoMineEnabled = autoMineSection:Toggle({
+        autoMineSection:Toggle({
             Name = "Enabled",
             Default = Config.AutoMine.Enabled,
             Callback = function(value)
@@ -1786,7 +1785,7 @@ local function initializeUI(UI)
             end
         }, 'MineCheckInt')
         autoMineSection:Divider()
-        uiElements.AutoMineHighlightEnabled = autoMineSection:Toggle({
+        autoMineSection:Toggle({
             Name = "Highlight Enabled",
             Default = Config.AutoMine.HighlightEnabled,
             Callback = function(value)
@@ -1827,7 +1826,7 @@ local function initializeUI(UI)
             end
         }, 'PrioritResources')
         autoMineSection:Divider()
-        uiElements.AutoMineZombieAlertEnabled = autoMineSection:Toggle({
+        autoMineSection:Toggle({
             Name = "Zombie Alert",
             Default = Config.AutoMine.ZombieAlert_Enabled,
             Callback = function(value)
@@ -1866,7 +1865,7 @@ local function initializeUI(UI)
         autoLootSection:Header({ Name = "AutoLoot" })
         autoLootSection:SubLabel({ Text = "Automates loot collection from crates" })
         
-        uiElements.AutoLootEnabled = autoLootSection:Toggle({
+        autoLootSection:Toggle({
             Name = "Enabled",
             Default = Config.AutoLoot.Enabled,
             Callback = function(value)
@@ -2002,7 +2001,7 @@ local function initializeUI(UI)
         autoDropSection:Header({ Name = "AutoDrop" })
         autoDropSection:SubLabel({ Text = "Automatically drops selected items from inventory" })
         
-        uiElements.AutoDropEnabled = autoDropSection:Toggle({
+        autoDropSection:Toggle({
             Name = "Enabled",
             Default = Config.AutoDrop.Enabled,
             Callback = function(value)
@@ -2011,16 +2010,16 @@ local function initializeUI(UI)
             end
         }, 'EnabledDrop')
         
-        uiElements.AutoDropOnlyAutoLoot = autoDropSection:Toggle({
+        autoDropSection:Toggle({
             Name = "Only AutoLoot",
             Default = Config.AutoDrop.OnlyAutoLoot,
             Callback = function(value)
                 Config.AutoDrop.OnlyAutoLoot = value
                 notify("AutoDrop", "Only AutoLoot " .. (value and "Enabled" or "Disabled"), true)
             end
-        }, 'OnlyAutoLoot')
+        }, 'OnlyLoot')
         
-        uiElements.AutoDropExactModeSync = autoDropSection:Toggle({
+        autoDropSection:Toggle({
             Name = "Exact Mode Sync",
             Default = Config.AutoDrop.ExactModeSync,
             Callback = function(value)
