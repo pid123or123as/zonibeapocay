@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Workspace = game:GetService("Workspace")
 local Enemies = Workspace:WaitForChild("Enemies")
@@ -129,6 +130,70 @@ local uiElements = {}
 local notify = print
 
 local Core = nil
+
+-- Функция для автоматической синхронизации конфигурации
+local function SynchronizeConfigValues()
+    if not uiElements then return end
+    
+    -- Синхронизация KillAura
+    if uiElements.KillAuraMaxDistance and uiElements.KillAuraMaxDistance.GetValue then
+        local uiValue = uiElements.KillAuraMaxDistance:GetValue()
+        if uiValue ~= Config.KillAura.MaxDistance then
+            Config.KillAura.MaxDistance = uiValue
+        end
+    end
+    
+    if uiElements.KillAuraMinusUseRate and uiElements.KillAuraMinusUseRate.GetValue then
+        Config.KillAura.MinusUseRate = uiElements.KillAuraMinusUseRate:GetValue()
+    end
+    
+    -- Синхронизация AutoMine
+    if uiElements.AutoMineDistanceLimit and uiElements.AutoMineDistanceLimit.GetValue then
+        local uiValue = uiElements.AutoMineDistanceLimit:GetValue()
+        if uiValue ~= Config.AutoMine.DistanceLimit then
+            Config.AutoMine.DistanceLimit = uiValue
+            Cache.CacheValid.Resources = false
+        end
+    end
+    
+    if uiElements.AutoMineCheckInterval and uiElements.AutoMineCheckInterval.GetValue then
+        Config.AutoMine.CheckInterval = uiElements.AutoMineCheckInterval:GetValue()
+    end
+    
+    if uiElements.AutoMineZombieAlertRadius and uiElements.AutoMineZombieAlertRadius.GetValue then
+        Config.AutoMine.ZombieAlert_Radius = uiElements.AutoMineZombieAlertRadius:GetValue()
+    end
+    
+    if uiElements.AutoMineGridCellSize and uiElements.AutoMineGridCellSize.GetValue then
+        local uiValue = uiElements.AutoMineGridCellSize:GetValue()
+        if uiValue ~= Config.AutoMine.GridCellSize then
+            Config.AutoMine.GridCellSize = uiValue
+            Cache.CacheValid.Resources = false
+        end
+    end
+    
+    -- Синхронизация AutoLoot
+    if uiElements.AutoLootMaxDistance and uiElements.AutoLootMaxDistance.GetValue then
+        local uiValue = uiElements.AutoLootMaxDistance:GetValue()
+        if uiValue ~= Config.AutoLoot.MaxDistance then
+            Config.AutoLoot.MaxDistance = uiValue
+            Cache.CacheValid.Loot = false
+        end
+    end
+    
+    if uiElements.AutoLootCheckInterval and uiElements.AutoLootCheckInterval.GetValue then
+        Config.AutoLoot.CheckInterval = uiElements.AutoLootCheckInterval:GetValue()
+    end
+    
+    if uiElements.AutoLootValidationDelay and uiElements.AutoLootValidationDelay.GetValue then
+        Config.AutoLoot.ValidationDelay = uiElements.AutoLootValidationDelay:GetValue()
+    end
+    
+    -- Синхронизация AutoDrop
+    if uiElements.AutoDropCheckInterval and uiElements.AutoDropCheckInterval.GetValue then
+        Config.AutoDrop.CheckInterval = uiElements.AutoDropCheckInterval:GetValue()
+    end
+end
 
 -- Функции для управления кэшем
 local function cleanupOldCache()
@@ -356,17 +421,34 @@ local function getItemConfig(itemName)
     return config
 end
 
+-- Исправленная функция для проверки разрешенных предметов с поддержкой ExactModeSync
 local function isItemAllowed(itemName)
     local baseItemName = getBaseItemName(itemName)
+    
+    -- Если включен ExactModeSync и AutoLoot в режиме Exact
+    if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
+        -- В этом режиме мы БЕРЕМ предметы НЕ из списка Exact
+        local itemsList = Config.AutoLoot.ItemsList
+        if type(itemsList) == "table" then
+            for item, enabled in pairs(itemsList) do
+                if (type(enabled) == "boolean" and enabled and baseItemName == item) or
+                   (type(enabled) == "string" and baseItemName == enabled) then
+                    return false -- Не берем, так как предмет в списке Exact
+                end
+            end
+        end
+        return true -- Берем, так как предмет не в списке Exact
+    end
+    
+    -- Обычная логика
     if Config.AutoLoot.Mode == "None" then
         return true
     elseif Config.AutoLoot.Mode == "Exact" then
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
-                if type(enabled) == "boolean" and enabled and baseItemName == item then
-                    return true
-                elseif type(enabled) == "string" and baseItemName == enabled then
+                if (type(enabled) == "boolean" and enabled and baseItemName == item) or
+                   (type(enabled) == "string" and baseItemName == enabled) then
                     return true
                 end
             end
@@ -376,9 +458,8 @@ local function isItemAllowed(itemName)
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
-                if type(enabled) == "boolean" and enabled and baseItemName == item then
-                    return false
-                elseif type(enabled) == "string" and baseItemName == enabled then
+                if (type(enabled) == "boolean" and enabled and baseItemName == item) or
+                   (type(enabled) == "string" and baseItemName == enabled) then
                     return false
                 end
             end
@@ -1187,19 +1268,19 @@ local function hitResource(target, item, useRate)
     end
 end
 
--- Функция проверки, должен ли предмет быть выброшен
+-- Функция проверки, должен ли предмет быть выброшен (работает независимо от isItemAllowed)
 local function shouldDropItem(itemName)
     local baseItemName = getBaseItemName(itemName)
     
-    -- Если включена синхронизация с Exact режимом
+    -- Если включен ExactModeSync и AutoLoot в режиме Exact
     if Config.AutoDrop.ExactModeSync and Config.AutoLoot.Mode == "Exact" then
-        -- В режиме Exact: выкидываем предметы НЕ из списка
+        -- В этом режиме мы выкидываем предметы НЕ из списка Exact
         local itemsList = Config.AutoLoot.ItemsList
         if type(itemsList) == "table" then
             for item, enabled in pairs(itemsList) do
                 if (type(enabled) == "boolean" and enabled and baseItemName == item) or
                    (type(enabled) == "string" and baseItemName == enabled) then
-                    return false -- Не выкидываем, так как предмет в списке Exact
+                    return false -- Не выкидываем, так как предмет в списке Exact (мы его сохраняем)
                 end
             end
         end
@@ -1890,9 +1971,8 @@ local function initializeUI(UI)
                 notify("AutoDrop", "Items to Drop updated", false)
             end
         })
-        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Select items to automatically drop from inventory" })
         autoDropSection:SubLabel({ Text = "[ ⁉️ ] Only AutoLoot: Drop only after AutoLoot picks up items" })
-        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Exact Mode Sync: When AutoLoot is in Exact mode, drop items NOT in the Exact list" })
+        autoDropSection:SubLabel({ Text = "[ ⁉️ ] Exact Mode Sync: When enabled, AutoLoot in Exact mode will pick up items NOT in the Exact list, and AutoDrop will drop them" })
     end
 end
 
@@ -1913,6 +1993,17 @@ local function init(UI, core, notif)
     end
     if UI then
         initializeUI(UI)
+        
+        -- Запускаем автоматическую синхронизацию конфигурации
+        local synchronizationTimer = 0
+        RunService.Heartbeat:Connect(function(deltaTime)
+            synchronizationTimer = synchronizationTimer + deltaTime
+            
+            if synchronizationTimer >= 1.0 then
+                synchronizationTimer = 0
+                SynchronizeConfigValues()
+            end
+        end)
     end
 end
 
