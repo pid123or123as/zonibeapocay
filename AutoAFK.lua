@@ -42,8 +42,9 @@ local FoodItems = {}
 local HealItems = {}
 local notify = print
 local OriginalSlot = nil  -- Запоминаем оригинальный слот
-local OriginalSlotItem = nil  -- Запоминаем оригинальный предмет
 local IsHealingInProgress = false
+local LastEquippedSlot = nil  -- Последний экипированный слот
+local IsFromScript = false  -- Флаг для определения вызова от скрипта
 
 -- Получение конфигурации consumable предметов
 local function getConsumableConfig(itemName)
@@ -61,7 +62,6 @@ local function getConsumableConfig(itemName)
     if configModule and configModule:IsA("ModuleScript") then
         local success, configTable = pcall(require, configModule)
         if success and configTable and configTable.class == "consumable" then
-            -- Проверяем FoodConfig
             local foodConfigModule = itemModel:FindFirstChild("FoodConfig")
             local foodConfig = nil
             if foodConfigModule and foodConfigModule:IsA("ModuleScript") then
@@ -71,7 +71,6 @@ local function getConsumableConfig(itemName)
                 end
             end
             
-            -- Проверяем WaterConfig
             local waterConfigModule = itemModel:FindFirstChild("WaterConfig")
             local waterConfig = nil
             if waterConfigModule and waterConfigModule:IsA("ModuleScript") then
@@ -81,7 +80,6 @@ local function getConsumableConfig(itemName)
                 end
             end
             
-            -- Объединяем конфиги
             local consumableConfig = {
                 hunger = 0,
                 thirst = 0,
@@ -307,31 +305,50 @@ local function moveToInventory(itemFolder)
     return true
 end
 
--- Сохранить текущий слот игрока
-local function saveOriginalSlot()
-    if IsHealingInProgress then
-        return
-    end
-    
-    for _, itemFolder in ipairs(Toolbar:GetChildren()) do
-        local indexValue = itemFolder:FindFirstChild("Index")
-        if indexValue then
-            -- Проверяем, экипирован ли этот предмет
-            local equipped = false
-            local success = pcall(function()
-                equipped = itemFolder:GetAttribute("Equipped") == true
-            end)
-            
-            if equipped then
-                OriginalSlot = indexValue.Value
-                OriginalSlotItem = itemFolder
-                return
+-- Найти текущий экипированный предмет (альтернативный метод)
+local function findCurrentEquippedSlot()
+    -- Проверяем Backpack игрока
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        -- Если в Backpack есть инструменты, ищем соответствующий слот
+        for _, tool in ipairs(backpack:GetChildren()) do
+            -- Ищем соответствующий предмет в тулбаре
+            for _, itemFolder in ipairs(Toolbar:GetChildren()) do
+                if itemFolder.Name == tool.Name then
+                    local indexValue = itemFolder:FindFirstChild("Index")
+                    if indexValue then
+                        return indexValue.Value
+                    end
+                end
             end
         end
     end
     
+    -- Если Backpack пуст, возможно игрок ничего не держит
+    return nil
+end
+
+-- Сохранить текущий слот игрока
+local function saveOriginalSlot()
+    if IsHealingInProgress or IsFromScript then
+        return
+    end
+    
+    local currentSlot = findCurrentEquippedSlot()
+    if currentSlot then
+        OriginalSlot = currentSlot
+        LastEquippedSlot = currentSlot
+        return true
+    end
+    
+    -- Если не нашли экипированный предмет, используем последний известный слот
+    if LastEquippedSlot then
+        OriginalSlot = LastEquippedSlot
+        return true
+    end
+    
     OriginalSlot = nil
-    OriginalSlotItem = nil
+    return false
 end
 
 -- Восстановить оригинальный слот
@@ -340,7 +357,10 @@ local function restoreOriginalSlot()
         return false
     end
     
-    -- Проверяем, есть ли еще предмет в оригинальном слоте
+    -- Устанавливаем флаг, что вызов от скрипта
+    IsFromScript = true
+    
+    -- Проверяем, есть ли предмет в оригинальном слоте
     local itemInOriginalSlot = nil
     for _, itemFolder in ipairs(Toolbar:GetChildren()) do
         local indexValue = itemFolder:FindFirstChild("Index")
@@ -354,9 +374,17 @@ local function restoreOriginalSlot()
         -- Экипируем предмет в оригинальном слоте
         local equipArgs = {[1] = OriginalSlot}
         EquipItem:FireServer(unpack(equipArgs))
+        
+        -- Обновляем последний известный слот
+        LastEquippedSlot = OriginalSlot
+        
+        -- Сбрасываем флаг
+        IsFromScript = false
         return true
     end
     
+    -- Сбрасываем флаг
+    IsFromScript = false
     return false
 end
 
@@ -443,13 +471,13 @@ end
 
 -- Интеллектуальный выбор лучшего лечебного предмета
 local function selectBestHealItem()
-    local health = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if not health then
+    local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
         return nil
     end
     
-    local currentHealth = health.Health
-    local maxHealth = health.MaxHealth
+    local currentHealth = humanoid.Health
+    local maxHealth = humanoid.MaxHealth
     
     if currentHealth >= maxHealth * (Config.AutoHeal.HealthThreshold / 100) then
         return nil
@@ -465,17 +493,14 @@ local function selectBestHealItem()
             local healthRestored = math.min(healItem.health, healthDeficit)
             local score = healthRestored * 2
             
-            -- Бонус за эффективность
             if healthRestored >= healthDeficit and healthDeficit > 0 then
                 score = score + 10
             end
             
-            -- Бонус если уже в тулбаре
             if healItem.location == "Toolbar" then
                 score = score * 1.2
             end
             
-            -- Штраф за низкое количество
             if healItem.count == 1 then
                 score = score * 0.9
             end
@@ -553,8 +578,10 @@ local function useHealItem(healItem)
     
     IsHealingInProgress = true
     
-    -- Сохраняем текущий слот
-    saveOriginalSlot()
+    -- Сохраняем текущий слот (если он еще не сохранен)
+    if not OriginalSlot then
+        saveOriginalSlot()
+    end
     
     local success = false
     
@@ -572,10 +599,16 @@ local function useHealItem(healItem)
             MoveItem:FireServer(unpack(args))
             wait(0.2)
             
+            -- Устанавливаем флаг, что экипировка от скрипта
+            IsFromScript = true
+            
             -- Экипируем
             local equipArgs = {[1] = freeSlot}
             EquipItem:FireServer(unpack(equipArgs))
             wait(0.1)
+            
+            -- Сбрасываем флаг
+            IsFromScript = false
             
             -- Используем
             Consume:FireServer()
@@ -598,9 +631,15 @@ local function useHealItem(healItem)
             if swapWithSlot9(healItem) then
                 wait(0.3)
                 
+                -- Устанавливаем флаг, что экипировка от скрипта
+                IsFromScript = true
+                
                 local equipArgs = {[1] = 9}
                 EquipItem:FireServer(unpack(equipArgs))
                 wait(0.1)
+                
+                -- Сбрасываем флаг
+                IsFromScript = false
                 
                 Consume:FireServer()
                 wait(0.2)
@@ -619,12 +658,16 @@ local function useHealItem(healItem)
         end
     else
         if healItem.slot then
-            -- Экипируем
+            -- Устанавливаем флаг, что экипировка от скрипта
+            IsFromScript = true
+            
             local equipArgs = {[1] = healItem.slot}
             EquipItem:FireServer(unpack(equipArgs))
             wait(0.1)
             
-            -- Используем
+            -- Сбрасываем флаг
+            IsFromScript = false
+            
             Consume:FireServer()
             wait(0.2)
             
@@ -741,17 +784,37 @@ local function mainLoop()
     end
 end
 
--- Слушаем экипировку предметов
-local function setupEquipListener()
-    local originalFireServer = EquipItem.FireServer
+-- Hook функции для отслеживания EquipItem
+local function setupEquipHook()
+    if not (hookfunction and getconnections) then
+        notify("AutoAFK", "Hook functions not available", false)
+        return
+    end
+    
+    -- Сохраняем оригинальную функцию
+    local originalEquipItem = EquipItem.FireServer
+    
+    -- Заменяем функцию
     EquipItem.FireServer = function(...)
         local args = {...}
+        
+        -- Проверяем, что это вызов EquipItem (первый аргумент - число)
         if #args > 0 and type(args[1]) == "number" then
-            -- Игрок экипировал предмет вручную
-            saveOriginalSlot()
+            local slot = args[1]
+            
+            -- Сохраняем слот только если вызов не от нашего скрипта
+            if not IsFromScript then
+                OriginalSlot = slot
+                LastEquippedSlot = slot
+                notify("AutoAFK", "Saved original slot: " .. slot, false)
+            end
         end
-        return originalFireServer(...)
+        
+        -- Вызываем оригинальную функцию
+        return originalEquipItem(...)
     end
+    
+    notify("AutoAFK", "EquipItem hook installed", true)
 end
 
 -- Инициализация UI
@@ -963,8 +1026,8 @@ end
 function AutoAFK.Init(UI, core, notifyFunc)
     notify = notifyFunc or print
     
-    -- Настраиваем слушатель экипировки
-    setupEquipListener()
+    -- Настраиваем hook для отслеживания EquipItem
+    setupEquipHook()
     
     -- Запускаем основной цикл
     task.spawn(mainLoop)
@@ -998,6 +1061,12 @@ function AutoAFK.Init(UI, core, notifyFunc)
     -- Первоначальное сканирование
     scanFoodItems()
     scanHealItems()
+    
+    -- Пытаемся сохранить начальный слот
+    task.spawn(function()
+        wait(1) -- Ждем немного для загрузки
+        saveOriginalSlot()
+    end)
     
     return AutoAFK
 end
