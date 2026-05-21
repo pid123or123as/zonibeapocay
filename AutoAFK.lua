@@ -48,33 +48,35 @@ local HealItems           = {}
 local notify              = print
 local IsHealingInProgress = false
 
--- Последний экипированный игроком слот (отслеживается через hookfunction)
+-- Последний слот, экипированный ИГРОКОМ (не скриптом)
 local LastEquippedSlot = 0
 
 -- ============================================================
--- hookfunction на EquipItem:FireServer — безопасный способ
--- Перехватываем только один конкретный remote, не трогаем
--- глобальный __namecall и не ломаем клиентские скрипты игры.
--- newcclosure делает функцию "нативной" (C closure) — обходит
--- большинство детекторов exploit-функций в игре.
+-- hookfunction + newcclosure + checkcaller
+--
+-- checkcaller() возвращает true если вызов идёт из нашего
+-- exploit-скрипта, и false если из игровых LocalScript'ов.
+-- Нам нужна обратная логика:
+--   - вызов от ИГРЫ (checkcaller() == false) → запоминаем слот
+--   - вызов от НАШЕГО скрипта (checkcaller() == true) → пропускаем
 -- ============================================================
 local OriginalEquipFireServer
 OriginalEquipFireServer = hookfunction(
     EquipItem.FireServer,
     newcclosure(function(self, slot, ...)
-        -- Запоминаем слот если это реальный equip игрока (slot > 0)
-        -- и вызов исходит НЕ от нашего скрипта (наш скрипт пишет напрямую)
-        if type(slot) == "number" and slot > 0 then
-            LastEquippedSlot = slot
+        -- Только если вызов пришёл из игры (LocalScript игры),
+        -- а не из нашего exploit-скрипта
+        if not checkcaller() then
+            if type(slot) == "number" and slot > 0 then
+                LastEquippedSlot = slot
+            end
         end
         return OriginalEquipFireServer(self, slot, ...)
     end)
 )
 
--- ============================================================
--- Наша обёртка для EquipItem — вызываем оригинал напрямую,
--- минуя хук, чтобы не обновлять LastEquippedSlot от своих действий
--- ============================================================
+-- Наш внутренний equip — вызываем оригинал напрямую,
+-- хук сработает но checkcaller() вернёт true → слот не перезапишется
 local function equipSlot(slot)
     OriginalEquipFireServer(EquipItem, slot)
 end
@@ -231,7 +233,6 @@ local function findItemInSlot9()
     return nil
 end
 
--- SwapItems: два Instance
 local function swapWithSlot9(itemToUse)
     if not itemToUse then return false end
     local slot9Item = findItemInSlot9()
@@ -285,10 +286,10 @@ local function selectBestFoodForCurrentNeeds()
                 elseif needT then score = tr * 2 end
             end
 
-            if hr >= hd and needH and hd > 0 then score = score + 5 end
-            if tr >= td and needT and td > 0 then score = score + 5 end
-            if food.location == "Toolbar" then score = score * 1.2 end
-            if food.count == 1 then score = score * 0.9 end
+            if hr >= hd and needH and hd > 0 then score += 5 end
+            if tr >= td and needT and td > 0 then score += 5 end
+            if food.location == "Toolbar" then score *= 1.2 end
+            if food.count == 1 then score *= 0.9 end
 
             if score > bestScore then bestScore = score; best = food end
         end
@@ -315,8 +316,8 @@ local function selectBestHealItem()
         if item.count > 0 and item.health > 0 then
             local restored = math.min(item.health, deficit)
             local score    = restored * 2
-            if item.location == "Toolbar" then score = score * 2 end
-            if restored >= deficit and deficit > 0 then score = score + 20 end
+            if item.location == "Toolbar" then score *= 2 end
+            if restored >= deficit and deficit > 0 then score += 20 end
             if score > bestScore then bestScore = score; best = item end
         end
     end
@@ -326,8 +327,8 @@ end
 
 -- ============================================================
 -- useFood
--- returnSlot берётся ДО наших действий → возврат на него после Consume
--- equipSlot вызывает OriginalEquipFireServer напрямую (не через хук)
+-- returnSlot снимается ДО любых наших equipSlot вызовов
+-- equipSlot → checkcaller()==true → LastEquippedSlot не трогается
 -- ============================================================
 local function useFood(foodItem)
     if not foodItem then return false end
@@ -598,7 +599,7 @@ local function initializeUI(UI)
         healSection:Divider()
         healSection:Button({Name = "Test Heal", Callback = testHeal})
 
-        -- Info-label обновление каждую секунду
+        -- Info-label обновление
         task.spawn(function()
             while true do
                 pcall(function()
