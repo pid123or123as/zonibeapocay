@@ -7,6 +7,7 @@ local LocalPlayer = Players.LocalPlayer
 local Inventory = LocalPlayer:WaitForChild("Inventory")
 local Toolbar = LocalPlayer:WaitForChild("Toolbar")
 local Data = LocalPlayer:WaitForChild("Data")
+local Character = Data:WaitForChild("Character")
 local Items = ReplicatedStorage:WaitForChild("Items")
 local Network = ReplicatedStorage:WaitForChild("Network")
 local ItemsFolder = Network:WaitForChild("Items")
@@ -36,517 +37,323 @@ local Config = {
     }
 }
 
--- UI элементы для синхронизации
 local uiElements = {}
-
--- Кэш предметов и состояний
 local ItemCache = {}
 local FoodItems = {}
 local HealItems = {}
 local notify = print
 local IsHealingInProgress = false
 
--- Получение конфигурации consumable предметов
+-- Получение конфига consumable предмета
 local function getConsumableConfig(itemName)
-    if ItemCache[itemName] then
-        return ItemCache[itemName]
+    if ItemCache[itemName] ~= nil then
+        return ItemCache[itemName] or nil
     end
-    
+
     local itemModel = Items:FindFirstChild(itemName)
     if not itemModel then
-        ItemCache[itemName] = nil
+        ItemCache[itemName] = false
         return nil
     end
-    
+
     local configModule = itemModel:FindFirstChild("Config")
     if configModule and configModule:IsA("ModuleScript") then
-        local success, configTable = pcall(require, configModule)
-        if success and configTable and configTable.class == "consumable" then
-            local foodConfigModule = itemModel:FindFirstChild("FoodConfig")
-            local foodConfig = nil
-            if foodConfigModule and foodConfigModule:IsA("ModuleScript") then
-                local success2, foodConfigTable = pcall(require, foodConfigModule)
-                if success2 and foodConfigTable then
-                    foodConfig = foodConfigTable
-                end
+        local ok, configTable = pcall(require, configModule)
+        if ok and configTable and configTable.class == "consumable" then
+            local foodConfig, waterConfig = nil, nil
+
+            local fcm = itemModel:FindFirstChild("FoodConfig")
+            if fcm and fcm:IsA("ModuleScript") then
+                local ok2, fc = pcall(require, fcm)
+                if ok2 and fc then foodConfig = fc end
             end
-            
-            local waterConfigModule = itemModel:FindFirstChild("WaterConfig")
-            local waterConfig = nil
-            if waterConfigModule and waterConfigModule:IsA("ModuleScript") then
-                local success3, waterConfigTable = pcall(require, waterConfigModule)
-                if success3 and waterConfigTable then
-                    waterConfig = waterConfigTable
-                end
+
+            local wcm = itemModel:FindFirstChild("WaterConfig")
+            if wcm and wcm:IsA("ModuleScript") then
+                local ok3, wc = pcall(require, wcm)
+                if ok3 and wc then waterConfig = wc end
             end
-            
-            local consumableConfig = {
-                hunger = 0,
-                thirst = 0,
-                health = 0,
-                stamina = 0
-            }
-            
+
+            local cc = { hunger = 0, thirst = 0, health = 0, stamina = 0 }
             if foodConfig then
-                consumableConfig.hunger = foodConfig.hunger or 0
-                consumableConfig.thirst = foodConfig.thirst or 0
-                consumableConfig.health = foodConfig.health or 0
-                consumableConfig.stamina = foodConfig.stamina or 0
+                cc.hunger  = foodConfig.hunger  or 0
+                cc.thirst  = foodConfig.thirst  or 0
+                cc.health  = foodConfig.health  or 0
+                cc.stamina = foodConfig.stamina or 0
             end
-            
             if waterConfig then
-                consumableConfig.thirst = waterConfig.thirst or 0
+                cc.thirst = waterConfig.thirst or 0
             end
-            
-            ItemCache[itemName] = {
-                class = "consumable",
-                config = consumableConfig
-            }
+
+            ItemCache[itemName] = { class = "consumable", config = cc }
             return ItemCache[itemName]
         end
     end
-    
-    ItemCache[itemName] = nil
+
+    ItemCache[itemName] = false
     return nil
 end
 
--- Проверяем, восстанавливает ли предмет голод или жажду
-local function isHungerOrThirstItem(consumableConfig)
-    if not consumableConfig or not consumableConfig.config then
-        return false
-    end
-    
-    local config = consumableConfig.config
-    return (config.hunger or 0) > 0 or (config.thirst or 0) > 0
+local function isHungerOrThirstItem(cc)
+    if not cc or not cc.config then return false end
+    return (cc.config.hunger or 0) > 0 or (cc.config.thirst or 0) > 0
 end
 
--- Проверяем, восстанавливает ли предмет здоровье
-local function isHealItem(consumableConfig)
-    if not consumableConfig or not consumableConfig.config then
-        return false
-    end
-    
-    local config = consumableConfig.config
-    return (config.health or 0) > 0
+local function isHealItem(cc)
+    if not cc or not cc.config then return false end
+    return (cc.config.health or 0) > 0
 end
 
--- Сбор информации о доступной еде и воде
+-- Сканирование еды
 local function scanFoodItems()
     FoodItems = {}
-    
-    for _, itemFolder in ipairs(Inventory:GetChildren()) do
-        local consumableConfig = getConsumableConfig(itemFolder.Name)
-        if consumableConfig and isHungerOrThirstItem(consumableConfig) then
-            local countValue = itemFolder:FindFirstChild("Count")
-            local count = countValue and countValue.Value or 1
-            
-            table.insert(FoodItems, {
-                folder = itemFolder,
-                name = itemFolder.Name,
-                count = count,
-                hunger = consumableConfig.config.hunger or 0,
-                thirst = consumableConfig.config.thirst or 0,
-                location = "Inventory",
-                totalValue = (consumableConfig.config.hunger or 0) + (consumableConfig.config.thirst or 0)
-            })
-        end
+    local function addFood(folder, location, slot)
+        local cc = getConsumableConfig(folder.Name)
+        if not cc or not isHungerOrThirstItem(cc) then return end
+        local cv = folder:FindFirstChild("Count")
+        table.insert(FoodItems, {
+            folder     = folder,
+            name       = folder.Name,
+            count      = cv and cv.Value or 1,
+            hunger     = cc.config.hunger or 0,
+            thirst     = cc.config.thirst or 0,
+            location   = location,
+            slot       = slot,
+            totalValue = (cc.config.hunger or 0) + (cc.config.thirst or 0)
+        })
     end
-    
-    for _, itemFolder in ipairs(Toolbar:GetChildren()) do
-        local consumableConfig = getConsumableConfig(itemFolder.Name)
-        if consumableConfig and isHungerOrThirstItem(consumableConfig) then
-            local countValue = itemFolder:FindFirstChild("Count")
-            local count = countValue and countValue.Value or 1
-            local indexValue = itemFolder:FindFirstChild("Index")
-            local slot = indexValue and indexValue.Value or nil
-            
-            table.insert(FoodItems, {
-                folder = itemFolder,
-                name = itemFolder.Name,
-                count = count,
-                hunger = consumableConfig.config.hunger or 0,
-                thirst = consumableConfig.config.thirst or 0,
-                location = "Toolbar",
-                slot = slot,
-                totalValue = (consumableConfig.config.hunger or 0) + (consumableConfig.config.thirst or 0)
-            })
-        end
+    for _, f in ipairs(Inventory:GetChildren()) do addFood(f, "Inventory", nil) end
+    for _, f in ipairs(Toolbar:GetChildren()) do
+        local iv = f:FindFirstChild("Index")
+        addFood(f, "Toolbar", iv and iv.Value or nil)
     end
 end
 
--- Сбор информации о лечебных предметах
+-- Сканирование лечебных предметов
 local function scanHealItems()
     HealItems = {}
-    
-    for _, itemFolder in ipairs(Inventory:GetChildren()) do
-        local consumableConfig = getConsumableConfig(itemFolder.Name)
-        if consumableConfig and isHealItem(consumableConfig) then
-            local countValue = itemFolder:FindFirstChild("Count")
-            local count = countValue and countValue.Value or 1
-            
-            table.insert(HealItems, {
-                folder = itemFolder,
-                name = itemFolder.Name,
-                count = count,
-                health = consumableConfig.config.health or 0,
-                location = "Inventory",
-                healValue = consumableConfig.config.health or 0
-            })
-        end
+    local function addHeal(folder, location, slot)
+        local cc = getConsumableConfig(folder.Name)
+        if not cc or not isHealItem(cc) then return end
+        local cv = folder:FindFirstChild("Count")
+        table.insert(HealItems, {
+            folder    = folder,
+            name      = folder.Name,
+            count     = cv and cv.Value or 1,
+            health    = cc.config.health or 0,
+            location  = location,
+            slot      = slot,
+            healValue = cc.config.health or 0
+        })
     end
-    
-    for _, itemFolder in ipairs(Toolbar:GetChildren()) do
-        local consumableConfig = getConsumableConfig(itemFolder.Name)
-        if consumableConfig and isHealItem(consumableConfig) then
-            local countValue = itemFolder:FindFirstChild("Count")
-            local count = countValue and countValue.Value or 1
-            local indexValue = itemFolder:FindFirstChild("Index")
-            local slot = indexValue and indexValue.Value or nil
-            
-            table.insert(HealItems, {
-                folder = itemFolder,
-                name = itemFolder.Name,
-                count = count,
-                health = consumableConfig.config.health or 0,
-                location = "Toolbar",
-                slot = slot,
-                healValue = consumableConfig.config.health or 0
-            })
-        end
+    for _, f in ipairs(Inventory:GetChildren()) do addHeal(f, "Inventory", nil) end
+    for _, f in ipairs(Toolbar:GetChildren()) do
+        local iv = f:FindFirstChild("Index")
+        addHeal(f, "Toolbar", iv and iv.Value or nil)
     end
 end
 
--- Поиск свободного слота в тулбаре
+-- Свободный слот тулбара
 local function findFreeToolbarSlot()
     for slot = 1, 9 do
-        local occupied = false
-        for _, itemFolder in ipairs(Toolbar:GetChildren()) do
-            local indexValue = itemFolder:FindFirstChild("Index")
-            if indexValue and indexValue.Value == slot then
-                occupied = true
-                break
-            end
+        local busy = false
+        for _, f in ipairs(Toolbar:GetChildren()) do
+            local iv = f:FindFirstChild("Index")
+            if iv and iv.Value == slot then busy = true; break end
         end
-        if not occupied then
-            return slot
-        end
+        if not busy then return slot end
     end
     return nil
 end
 
--- Поиск свободного слота в инвентаре
+-- Свободный слот инвентаря
 local function findFreeInventorySlot()
-    local inventorySize = Data.InventorySize and Data.InventorySize.Value or 30
-    for slot = 1, inventorySize do
-        local occupied = false
-        for _, itemFolder in ipairs(Inventory:GetChildren()) do
-            local indexValue = itemFolder:FindFirstChild("Index")
-            if indexValue and indexValue.Value == slot then
-                occupied = true
-                break
-            end
+    local size = Data.InventorySize and Data.InventorySize.Value or 30
+    for slot = 1, size do
+        local busy = false
+        for _, f in ipairs(Inventory:GetChildren()) do
+            local iv = f:FindFirstChild("Index")
+            if iv and iv.Value == slot then busy = true; break end
         end
-        if not occupied then
-            return slot
-        end
+        if not busy then return slot end
     end
     return nil
 end
 
--- Найти предмет в слоте 9 (последний слот)
+-- Предмет в слоте 9
 local function findItemInSlot9()
-    for _, itemFolder in ipairs(Toolbar:GetChildren()) do
-        local indexValue = itemFolder:FindFirstChild("Index")
-        if indexValue and indexValue.Value == 9 then
-            return itemFolder
-        end
+    for _, f in ipairs(Toolbar:GetChildren()) do
+        local iv = f:FindFirstChild("Index")
+        if iv and iv.Value == 9 then return f end
     end
     return nil
 end
 
--- Замена предмета в слоте 9
+-- Swap предмета из инвентаря со слотом 9
+-- SwapItems ожидает два Instance (itemFolder1, itemFolder2)
 local function swapWithSlot9(itemToUse)
-    if not itemToUse then
-        return false
-    end
-    
+    if not itemToUse then return false end
     local slot9Item = findItemInSlot9()
-    if not slot9Item then
-        return false
-    end
-    
-    local args = {
-        [1] = itemToUse.folder,
-        [2] = slot9Item
-    }
-    
-    SwapItems:FireServer(unpack(args))
+    if not slot9Item then return false end
+    SwapItems:FireServer(itemToUse.folder, slot9Item)
     return true
 end
 
--- Переместить предмет из тулбара в инвентарь
+-- Вернуть предмет в инвентарь
 local function moveToInventory(itemFolder)
-    if not itemFolder then
-        return false
-    end
-    
+    if not itemFolder then return false end
     local freeSlot = findFreeInventorySlot()
-    if not freeSlot then
-        return false
-    end
-    
-    local args = {
-        [1] = itemFolder,
-        [2] = "Inventory",
-        [3] = freeSlot
-    }
-    
-    MoveItem:FireServer(unpack(args))
+    if not freeSlot then return false end
+    MoveItem:FireServer(itemFolder, "Inventory", freeSlot)
     return true
 end
 
--- Интеллектуальный выбор лучшей еды для текущих потребностей
+-- Выбор лучшей еды/воды
 local function selectBestFoodForCurrentNeeds()
-    local hunger = Data.Hunger.Value
-    local thirst = Data.Thirst.Value
-    
-    local needHunger = hunger < Config.AutoEat.HungerThreshold
-    local needThirst = thirst < Config.AutoEat.ThirstThreshold
-    
-    if not needHunger and not needThirst then
-        return nil
-    end
-    
-    local bestItem = nil
-    local bestScore = -math.huge
-    local hungerDeficit = math.max(0, Config.AutoEat.HungerThreshold - hunger)
-    local thirstDeficit = math.max(0, Config.AutoEat.ThirstThreshold - thirst)
-    
+    local hunger = Character.Hunger.Value
+    local thirst = Character.Thirst.Value
+
+    local needH = hunger < Config.AutoEat.HungerThreshold
+    local needT = thirst < Config.AutoEat.ThirstThreshold
+    if not needH and not needT then return nil end
+
+    local best, bestScore = nil, -math.huge
+    local hd = math.max(0, Config.AutoEat.HungerThreshold - hunger)
+    local td = math.max(0, Config.AutoEat.ThirstThreshold - thirst)
+
     for _, food in ipairs(FoodItems) do
         if food.count > 0 and (food.hunger > 0 or food.thirst > 0) then
+            local hr = math.min(food.hunger, hd)
+            local tr = math.min(food.thirst, td)
             local score = 0
-            local hungerRestored = math.min(food.hunger, hungerDeficit)
-            local thirstRestored = math.min(food.thirst, thirstDeficit)
-            
+
             if Config.AutoEat.Priority == "Hunger" then
-                if needHunger then
-                    score = hungerRestored * 2
-                    if needThirst then
-                        score = score + thirstRestored * 0.5
-                    end
-                elseif needThirst then
-                    score = thirstRestored
-                end
+                if needH then score = hr * 2 + (needT and tr * 0.5 or 0)
+                elseif needT then score = tr end
             elseif Config.AutoEat.Priority == "Thirst" then
-                if needThirst then
-                    score = thirstRestored * 2
-                    if needHunger then
-                        score = score + hungerRestored * 0.5
-                    end
-                elseif needHunger then
-                    score = hungerRestored
-                end
-            else -- "Both"
-                if needHunger and needThirst then
-                    local totalDeficit = hungerDeficit + thirstDeficit
-                    local hungerWeight = totalDeficit > 0 and (hungerDeficit / totalDeficit) or 0.5
-                    local thirstWeight = totalDeficit > 0 and (thirstDeficit / totalDeficit) or 0.5
-                    
-                    score = (hungerRestored * hungerWeight * 2) + 
-                            (thirstRestored * thirstWeight * 2)
-                elseif needHunger then
-                    score = hungerRestored * 2
-                elseif needThirst then
-                    score = thirstRestored * 2
-                end
+                if needT then score = tr * 2 + (needH and hr * 0.5 or 0)
+                elseif needH then score = hr end
+            else
+                if needH and needT then
+                    local total = hd + td
+                    local hw = total > 0 and (hd / total) or 0.5
+                    local tw = total > 0 and (td / total) or 0.5
+                    score = (hr * hw * 2) + (tr * tw * 2)
+                elseif needH then score = hr * 2
+                elseif needT then score = tr * 2 end
             end
-            
-            if hungerRestored >= hungerDeficit and needHunger and hungerDeficit > 0 then
-                score = score + 5
-            end
-            if thirstRestored >= thirstDeficit and needThirst and thirstDeficit > 0 then
-                score = score + 5
-            end
-            
-            if food.location == "Toolbar" then
-                score = score * 1.2
-            end
-            
-            if food.count == 1 then
-                score = score * 0.9
-            end
-            
-            if score > bestScore then
-                bestScore = score
-                bestItem = food
-            end
+
+            if hr >= hd and needH and hd > 0 then score = score + 5 end
+            if tr >= td and needT and td > 0 then score = score + 5 end
+            if food.location == "Toolbar" then score = score * 1.2 end
+            if food.count == 1 then score = score * 0.9 end
+
+            if score > bestScore then bestScore = score; best = food end
         end
     end
-    
-    return bestItem
+
+    return best
 end
 
--- Интеллектуальный выбор лучшего лечебного предмета (быстрый)
+-- Выбор лучшего лечебного предмета
 local function selectBestHealItem()
     local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then
-        return nil
-    end
-    
-    local currentHealth = humanoid.Health
-    local maxHealth = humanoid.MaxHealth
-    
-    if currentHealth >= maxHealth * (Config.AutoHeal.HealthThreshold / 100) then
-        return nil
-    end
-    
-    local healthDeficit = math.max(0, maxHealth * (Config.AutoHeal.HealthThreshold / 100) - currentHealth)
-    
-    local bestItem = nil
-    local bestScore = -math.huge
-    
-    for _, healItem in ipairs(HealItems) do
-        if healItem.count > 0 and healItem.health > 0 then
-            local healthRestored = math.min(healItem.health, healthDeficit)
-            local score = healthRestored * 2
-            
-            -- Приоритет для предметов в тулбаре для быстрого лечения
-            if healItem.location == "Toolbar" then
-                score = score * 2
-            end
-            
-            -- Приоритет для предметов с большим лечением
-            if healthRestored >= healthDeficit and healthDeficit > 0 then
-                score = score + 20
-            end
-            
-            if score > bestScore then
-                bestScore = score
-                bestItem = healItem
-            end
+    if not humanoid then return nil end
+
+    local curHp = humanoid.Health
+    local maxHp = humanoid.MaxHealth
+    if curHp >= maxHp * (Config.AutoHeal.HealthThreshold / 100) then return nil end
+
+    local deficit = math.max(0, maxHp * (Config.AutoHeal.HealthThreshold / 100) - curHp)
+    local best, bestScore = nil, -math.huge
+
+    for _, item in ipairs(HealItems) do
+        if item.count > 0 and item.health > 0 then
+            local restored = math.min(item.health, deficit)
+            local score = restored * 2
+            if item.location == "Toolbar" then score = score * 2 end
+            if restored >= deficit and deficit > 0 then score = score + 20 end
+            if score > bestScore then bestScore = score; best = item end
         end
     end
-    
-    return bestItem
+
+    return best
 end
 
--- Использование еды/воды
+-- Использование еды
 local function useFood(foodItem)
-    if not foodItem then 
-        return false 
-    end
-    
+    if not foodItem then return false end
+
     if foodItem.location == "Inventory" then
         local freeSlot = findFreeToolbarSlot()
-        
         if freeSlot then
-            local args = {
-                [1] = foodItem.folder,
-                [2] = "Toolbar",
-                [3] = freeSlot
-            }
-            
-            MoveItem:FireServer(unpack(args))
-            wait(0.1)
-            
+            MoveItem:FireServer(foodItem.folder, "Toolbar", freeSlot)
+            task.wait(0.1)
             EquipItem:FireServer(freeSlot)
-            wait(0.05)
-            
+            task.wait(0.05)
             Consume:FireServer()
-            wait(0.05)
-            
-            -- Возвращаем пустой слот
+            task.wait(0.05)
             EquipItem:FireServer(0)
             return true
         elseif Config.AutoEat.SwapWhenFull then
             if swapWithSlot9(foodItem) then
-                wait(0.2)
-                
+                task.wait(0.2)
                 EquipItem:FireServer(9)
-                wait(0.05)
-                
+                task.wait(0.05)
                 Consume:FireServer()
-                wait(0.05)
-                
+                task.wait(0.05)
                 EquipItem:FireServer(0)
                 return true
-            else
-                return false
             end
-        else
-            return false
         end
     else
         if foodItem.slot then
             EquipItem:FireServer(foodItem.slot)
-            wait(0.05)
-            
+            task.wait(0.05)
             Consume:FireServer()
-            wait(0.05)
-            
+            task.wait(0.05)
             EquipItem:FireServer(0)
             return true
         end
     end
-    
+
     return false
 end
 
--- Использование лечебного предмета (быстрое)
+-- Использование лечебного предмета
 local function useHealItem(healItem)
-    if not healItem or IsHealingInProgress then
-        return false
-    end
-    
+    if not healItem or IsHealingInProgress then return false end
     IsHealingInProgress = true
     local success = false
-    
+
     if healItem.location == "Inventory" then
         if Config.AutoHeal.FastHeal then
             local freeSlot = findFreeToolbarSlot()
-            
             if freeSlot then
-                local args = {
-                    [1] = healItem.folder,
-                    [2] = "Toolbar",
-                    [3] = freeSlot
-                }
-                
-                MoveItem:FireServer(unpack(args))
-                wait(0.1)
-                
+                MoveItem:FireServer(healItem.folder, "Toolbar", freeSlot)
+                task.wait(0.1)
                 EquipItem:FireServer(freeSlot)
-                wait(0.05)
-                
+                task.wait(0.05)
                 Consume:FireServer()
-                wait(0.05)
-                
+                task.wait(0.05)
                 EquipItem:FireServer(0)
-                
-                -- Возвращаем предмет в инвентарь
                 task.spawn(function()
-                    wait(0.3)
+                    task.wait(0.3)
                     moveToInventory(healItem.folder)
                 end)
-                
                 success = true
             elseif Config.AutoHeal.SwapWhenFull then
                 if swapWithSlot9(healItem) then
-                    wait(0.2)
-                    
+                    task.wait(0.2)
                     EquipItem:FireServer(9)
-                    wait(0.05)
-                    
+                    task.wait(0.05)
                     Consume:FireServer()
-                    wait(0.05)
-                    
+                    task.wait(0.05)
                     EquipItem:FireServer(0)
-                    
                     task.spawn(function()
-                        wait(0.3)
+                        task.wait(0.3)
                         moveToInventory(healItem.folder)
                     end)
-                    
                     success = true
                 end
             end
@@ -554,68 +361,19 @@ local function useHealItem(healItem)
     else
         if healItem.slot then
             EquipItem:FireServer(healItem.slot)
-            wait(0.05)
-            
+            task.wait(0.05)
             Consume:FireServer()
-            wait(0.05)
-            
+            task.wait(0.05)
             EquipItem:FireServer(0)
             success = true
         end
     end
-    
+
     IsHealingInProgress = false
     return success
 end
 
--- Основная функция авто-питания
-local function autoEat()
-    if not Config.AutoEat.Enabled then return end
-    if not LocalPlayer.Character then return end
-    
-    scanFoodItems()
-    
-    if #FoodItems == 0 then
-        return
-    end
-    
-    local bestFood = selectBestFoodForCurrentNeeds()
-    
-    if bestFood then
-        useFood(bestFood)
-    end
-end
-
--- Основная функция авто-лечения (быстрая)
-local function autoHeal()
-    if not Config.AutoHeal.Enabled then return end
-    if not LocalPlayer.Character then return end
-    if IsHealingInProgress then return end
-    
-    local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return end
-    
-    local currentHealth = humanoid.Health
-    local maxHealth = humanoid.MaxHealth
-    
-    if currentHealth >= maxHealth * (Config.AutoHeal.HealthThreshold / 100) then
-        return
-    end
-    
-    scanHealItems()
-    
-    if #HealItems == 0 then
-        return
-    end
-    
-    local bestHealItem = selectBestHealItem()
-    
-    if bestHealItem then
-        useHealItem(bestHealItem)
-    end
-end
-
--- Функции для Optimize секции
+-- Optimize
 local function cleanDroppedItems()
     local workspaceItems = game:GetService("Workspace"):FindFirstChild("Items")
     if workspaceItems then
@@ -644,349 +402,211 @@ local function removeZombies()
     end
 end
 
--- Тестовая функция для AutoEat
+-- Тест еды
 local function testEat()
     scanFoodItems()
-    
     if #FoodItems == 0 then
         notify("AutoEat", "No food or water in inventory!", false)
         return
     end
-    
-    local testFood = FoodItems[1]
-    local used = useFood(testFood)
-    
-    if used then
-        notify("AutoEat", "Test: used " .. testFood.name, false)
-    else
-        notify("AutoEat", "Test: failed to use item", false)
-    end
+    local used = useFood(FoodItems[1])
+    notify("AutoEat", used and ("Test: used " .. FoodItems[1].name) or "Test: failed to use item", false)
 end
 
--- Тестовая функция для AutoHeal
+-- Тест лечения
 local function testHeal()
     scanHealItems()
-    
     if #HealItems == 0 then
         notify("AutoHeal", "No healing items in inventory!", false)
         return
     end
-    
-    local testHeal = HealItems[1]
-    local used = useHealItem(testHeal)
-    
-    if used then
-        notify("AutoHeal", "Test: used " .. testHeal.name, false)
-    else
-        notify("AutoHeal", "Test: failed to use healing item", false)
-    end
+    local used = useHealItem(HealItems[1])
+    notify("AutoHeal", used and ("Test: used " .. HealItems[1].name) or "Test: failed to use healing item", false)
 end
 
 -- Основной цикл
 local function mainLoop()
     while true do
-        if Config.AutoEat.Enabled then
-            autoEat()
+        if Config.AutoEat.Enabled and LocalPlayer.Character then
+            scanFoodItems()
+            if #FoodItems > 0 then
+                local best = selectBestFoodForCurrentNeeds()
+                if best then useFood(best) end
+            end
         end
-        
-        if Config.AutoHeal.Enabled then
-            autoHeal()
+        if Config.AutoHeal.Enabled and LocalPlayer.Character and not IsHealingInProgress then
+            local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health < humanoid.MaxHealth * (Config.AutoHeal.HealthThreshold / 100) then
+                scanHealItems()
+                if #HealItems > 0 then
+                    local best = selectBestHealItem()
+                    if best then useHealItem(best) end
+                end
+            end
         end
-        
-        wait(math.min(Config.AutoEat.CheckInterval, Config.AutoHeal.CheckInterval))
+        task.wait(math.min(Config.AutoEat.CheckInterval, Config.AutoHeal.CheckInterval))
     end
 end
 
-local function SynchronizeConfigValues()
-    if not uiElements then return end
-    
-    if uiElements.HungerThresh and uiElements.HungerThresh.GetValue then
-        local uiValue = uiElements.HungerThresh:GetValue()
-        if uiValue ~= Config.AutoEat.HungerThreshold then
-            Config.AutoEat.HungerThreshold = uiValue
-        end
-    end
-    
-    if uiElements.ThristThresh and uiElements.ThristThresh.GetValue then
-        Config.AutoEat.ThirstThreshold = uiElements.ThristThresh:GetValue()
-    end
-    
-    if uiElements.CheckIntervalaye and uiElements.CheckIntervalaye.GetValue then
-        Config.AutoEat.CheckInterval = uiElements.CheckIntervalaye:GetValue()
-    end
-    
-    if uiElements.HeslThreshold and uiElements.HeslThreshold.GetValue then
-        Config.AutoHeal.HealthThreshold = uiElements.HeslThreshold:GetValue()
-    end
-    
-    if uiElements.Checkintervalheal and uiElements.Checkintervalheal.GetValue then
-        Config.AutoHeal.CheckInterval = uiElements.Checkintervalheal:GetValue()
-    end
-end
-
+-- UI
 local function initializeUI(UI)
     if UI.Tabs and UI.Tabs.Main then
+        -- AutoEat
         local eatSection = UI.Tabs.Main:Section({Name = "AutoEat", Side = "Left"})
-        
         eatSection:Header({Name = "AutoEat"})
-        
         local eatInfoLabel = eatSection:SubLabel({Text = "Loading food data..."})
-        
+
         uiElements.EnabledAutoEat = eatSection:Toggle({
-            Name = "Enabled",
-            Default = Config.AutoEat.Enabled,
-            Callback = function(value)
-                Config.AutoEat.Enabled = value
-                notify("AutoAFK", "AutoEat " .. (value and "Enabled" or "Disabled"), true)
-            end
-        }, 'EnabledEat')
-        
+            Name = "Enabled", Default = Config.AutoEat.Enabled,
+            Callback = function(v) Config.AutoEat.Enabled = v; notify("AutoAFK", "AutoEat " .. (v and "Enabled" or "Disabled"), true) end
+        }, "EnabledEat")
+
         uiElements.HungerThresh = eatSection:Slider({
-            Name = "Hunger Threshold",
-            Minimum = 0,
-            Maximum = 100,
-            DisplayMethod = 'Percent',
-            Default = Config.AutoEat.HungerThreshold,
-            Precision = 0,
-            Callback = function(value)
-                Config.AutoEat.HungerThreshold = value
-            end
-        }, 'HungerThres')
-        
-        uiElements.ThristThresh = eatSection:Slider({
-            Name = "Thirst Threshold",
-            Minimum = 0,
-            Maximum = 100,
-            DisplayMethod = 'Percent',
-            Default = Config.AutoEat.ThirstThreshold,
-            Precision = 0,
-            Callback = function(value)
-                Config.AutoEat.ThirstThreshold = value
-            end
-        }, 'ThirstThres')
-        
-        uiElements.CheckIntervalaye = eatSection:Slider({
-            Name = "Check Interval",
-            Minimum = 1,
-            Maximum = 10,
-            Default = Config.AutoEat.CheckInterval,
-            Precision = 0,
-            Callback = function(value)
-                Config.AutoEat.CheckInterval = value
-            end
-        }, 'CheckInterEat')
-        
+            Name = "Hunger Threshold", Minimum = 0, Maximum = 100,
+            DisplayMethod = "Percent", Default = Config.AutoEat.HungerThreshold, Precision = 0,
+            Callback = function(v) Config.AutoEat.HungerThreshold = v end
+        }, "HungerThres")
+
+        uiElements.ThirstThresh = eatSection:Slider({
+            Name = "Thirst Threshold", Minimum = 0, Maximum = 100,
+            DisplayMethod = "Percent", Default = Config.AutoEat.ThirstThreshold, Precision = 0,
+            Callback = function(v) Config.AutoEat.ThirstThreshold = v end
+        }, "ThirstThres")
+
+        uiElements.CheckIntervalEat = eatSection:Slider({
+            Name = "Check Interval", Minimum = 1, Maximum = 10,
+            Default = Config.AutoEat.CheckInterval, Precision = 0,
+            Callback = function(v) Config.AutoEat.CheckInterval = v end
+        }, "CheckInterEat")
+
         uiElements.PriorityEat = eatSection:Dropdown({
-            Name = "Priority",
-            Default = Config.AutoEat.Priority,
+            Name = "Priority", Default = Config.AutoEat.Priority,
             Options = {"Both", "Hunger", "Thirst"},
-            Callback = function(value)
-                Config.AutoEat.Priority = value
-            end
-        }, 'PriorityEat')
-        
-        uiElements.UseBestItemAEAT = eatSection:Toggle({
-            Name = "Use Best Item",
-            Default = Config.AutoEat.UseBestItem,
-            Callback = function(value)
-                Config.AutoEat.UseBestItem = value
-            end
-        }, 'BestAutoEat')
-        
-        uiElements.SwapWhenFullAutoEat = eatSection:Toggle({
-            Name = "Swap When Toolbar Full",
-            Default = Config.AutoEat.SwapWhenFull,
-            Callback = function(value)
-                Config.AutoEat.SwapWhenFull = value
-            end
-        }, 'SwapAutoEat')
-        
+            Callback = function(v) Config.AutoEat.Priority = v end
+        }, "PriorityEat")
+
+        uiElements.UseBestItemEat = eatSection:Toggle({
+            Name = "Use Best Item", Default = Config.AutoEat.UseBestItem,
+            Callback = function(v) Config.AutoEat.UseBestItem = v end
+        }, "BestAutoEat")
+
+        uiElements.SwapWhenFullEat = eatSection:Toggle({
+            Name = "Swap When Toolbar Full", Default = Config.AutoEat.SwapWhenFull,
+            Callback = function(v) Config.AutoEat.SwapWhenFull = v end
+        }, "SwapAutoEat")
+
         eatSection:Divider()
-        eatSection:Button({
-            Name = "Test Eat",
-            Callback = testEat
-        })
+        eatSection:Button({Name = "Test Eat", Callback = testEat})
+
+        -- AutoHeal
         local healSection = UI.Tabs.Main:Section({Name = "AutoHeal", Side = "Right"})
-        
         healSection:Header({Name = "AutoHeal"})
-        
         local healInfoLabel = healSection:SubLabel({Text = "Loading health data..."})
-        
+
         uiElements.EnabledAutoHeal = healSection:Toggle({
-            Name = "Enabled",
-            Default = Config.AutoHeal.Enabled,
-            Callback = function(value)
-                Config.AutoHeal.Enabled = value
-                notify("AutoAFK", "AutoHeal " .. (value and "Enabled" or "Disabled"), true)
-            end
-        }, 'EnabledHeal')
-        
-        uiElements.HeslThreshold = healSection:Slider({
-            Name = "Health Threshold",
-            Minimum = 0,
-            Maximum = 100,
-            DisplayMethod = 'Percent',
-            Default = Config.AutoHeal.HealthThreshold,
-            Precision = 0,
-            Callback = function(value)
-                Config.AutoHeal.HealthThreshold = value
-            end
-        }, 'HealThres')
-        
-        uiElements.Checkintervalheal = healSection:Slider({
-            Name = "Check Interval",
-            Minimum = 0,
-            Maximum = 5,
-            Default = Config.AutoHeal.CheckInterval,
-            Precision = 0,
-            Callback = function(value)
-                Config.AutoHeal.CheckInterval = value
-            end
-        }, 'CheckInterHeal')
-        
+            Name = "Enabled", Default = Config.AutoHeal.Enabled,
+            Callback = function(v) Config.AutoHeal.Enabled = v; notify("AutoAFK", "AutoHeal " .. (v and "Enabled" or "Disabled"), true) end
+        }, "EnabledHeal")
+
+        uiElements.HealThreshold = healSection:Slider({
+            Name = "Health Threshold", Minimum = 0, Maximum = 100,
+            DisplayMethod = "Percent", Default = Config.AutoHeal.HealthThreshold, Precision = 0,
+            Callback = function(v) Config.AutoHeal.HealthThreshold = v end
+        }, "HealThres")
+
+        uiElements.CheckIntervalHeal = healSection:Slider({
+            Name = "Check Interval", Minimum = 0, Maximum = 5,
+            Default = Config.AutoHeal.CheckInterval, Precision = 0,
+            Callback = function(v) Config.AutoHeal.CheckInterval = v end
+        }, "CheckInterHeal")
+
         uiElements.UseBestItemHeal = healSection:Toggle({
-            Name = "Use Best Item",
-            Default = Config.AutoHeal.UseBestItem,
-            Callback = function(value)
-                Config.AutoHeal.UseBestItem = value
-            end
-        }, 'UseBestHeal')
-        
+            Name = "Use Best Item", Default = Config.AutoHeal.UseBestItem,
+            Callback = function(v) Config.AutoHeal.UseBestItem = v end
+        }, "UseBestHeal")
+
         uiElements.FastHeal = healSection:Toggle({
-            Name = "Fast Heal",
-            Default = Config.AutoHeal.FastHeal,
-            Callback = function(value)
-                Config.AutoHeal.FastHeal = value
-            end
-        }, 'FastHeal')
-        
+            Name = "Fast Heal", Default = Config.AutoHeal.FastHeal,
+            Callback = function(v) Config.AutoHeal.FastHeal = v end
+        }, "FastHeal")
+
         uiElements.SwapWhenFullHeal = healSection:Toggle({
-            Name = "Swap When Toolbar Full",
-            Default = Config.AutoHeal.SwapWhenFull,
-            Callback = function(value)
-                Config.AutoHeal.SwapWhenFull = value
-            end
-        }, 'SwapHeal')
-        
+            Name = "Swap When Toolbar Full", Default = Config.AutoHeal.SwapWhenFull,
+            Callback = function(v) Config.AutoHeal.SwapWhenFull = v end
+        }, "SwapHeal")
+
         healSection:Divider()
-        healSection:Button({
-            Name = "Test Heal",
-            Callback = testHeal
-        })
-        
-        local function updateInfo()
-            if Data and Data.Hunger and Data.Thirst then
-                local hungerStatus = Data.Hunger.Value < Config.AutoEat.HungerThreshold and "⚠ Low" or "✓ OK"
-                local thirstStatus = Data.Thirst.Value < Config.AutoEat.ThirstThreshold and "⚠ Low" or "✓ OK"
-                local validFoodCount = 0
-                
-                for _, food in ipairs(FoodItems) do
-                    if food.hunger > 0 or food.thirst > 0 then
-                        validFoodCount = validFoodCount + 1
-                    end
-                end
-                
-                eatInfoLabel:UpdateName(string.format("Hunger: %d/%d (%s) | Thirst: %d/%d (%s) | Items: %d", 
-                    Data.Hunger.Value, Config.AutoEat.HungerThreshold, hungerStatus,
-                    Data.Thirst.Value, Config.AutoEat.ThirstThreshold, thirstStatus,
-                    validFoodCount))
-            end
-            
-            if LocalPlayer.Character then
-                local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    local healthPercent = math.floor((humanoid.Health / humanoid.MaxHealth) * 100)
-                    local healthStatus = healthPercent < Config.AutoHeal.HealthThreshold and "⚠ Low" or "✓ OK"
-                    local validHealCount = 0
-                    
-                    for _, heal in ipairs(HealItems) do
-                        if heal.health > 0 then
-                            validHealCount = validHealCount + 1
-                        end
-                    end
-                    
-                    healInfoLabel:UpdateName(string.format("Health: %d/%d (%d%%, %s) | Heal Items: %d", 
-                        math.floor(humanoid.Health), math.floor(humanoid.MaxHealth), 
-                        healthPercent, healthStatus, validHealCount))
-                end
-            end
-        end
-        
+        healSection:Button({Name = "Test Heal", Callback = testHeal})
+
+        -- Обновление info-label (Hunger/Thirst из Data.Character)
         task.spawn(function()
             while true do
-                updateInfo()
-                wait(1)
+                pcall(function()
+                    if Character:FindFirstChild("Hunger") and Character:FindFirstChild("Thirst") then
+                        local hv = Character.Hunger.Value
+                        local tv = Character.Thirst.Value
+                        local hs = hv < Config.AutoEat.HungerThreshold and "⚠ Low" or "✓ OK"
+                        local ts = tv < Config.AutoEat.ThirstThreshold and "⚠ Low" or "✓ OK"
+                        local fc = 0
+                        for _, food in ipairs(FoodItems) do
+                            if food.hunger > 0 or food.thirst > 0 then fc = fc + 1 end
+                        end
+                        eatInfoLabel:UpdateName(string.format(
+                            "Hunger: %d/%d (%s) | Thirst: %d/%d (%s) | Items: %d",
+                            hv, Config.AutoEat.HungerThreshold, hs,
+                            tv, Config.AutoEat.ThirstThreshold, ts, fc
+                        ))
+                    end
+                end)
+
+                pcall(function()
+                    if LocalPlayer.Character then
+                        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                        if hum then
+                            local pct = math.floor((hum.Health / hum.MaxHealth) * 100)
+                            local hst = pct < Config.AutoHeal.HealthThreshold and "⚠ Low" or "✓ OK"
+                            local hc = 0
+                            for _, h in ipairs(HealItems) do
+                                if h.health > 0 then hc = hc + 1 end
+                            end
+                            healInfoLabel:UpdateName(string.format(
+                                "Health: %d/%d (%d%%, %s) | Heal Items: %d",
+                                math.floor(hum.Health), math.floor(hum.MaxHealth), pct, hst, hc
+                            ))
+                        end
+                    end
+                end)
+
+                task.wait(1)
             end
         end)
     end
-    
+
     if UI.Tabs and UI.Tabs.Misc then
-        local optimizeSection = UI.Tabs.Misc:Section({Name = "Optimize", Side = "Left"})
-        
-        optimizeSection:Header({Name = "Performance Optimization"})
-        
-        optimizeSection:Button({
-            Name = "Clean Dropped Items",
-            Callback = cleanDroppedItems
-        })
-        
-        optimizeSection:Button({
-            Name = "Remove Zombies",
-            Callback = removeZombies
-        })
-        
-        optimizeSection:SubLabel({Text = "Removes dropped items and enemies to improve performance"})
+        local optSection = UI.Tabs.Misc:Section({Name = "Optimize", Side = "Left"})
+        optSection:Header({Name = "Performance Optimization"})
+        optSection:Button({Name = "Clean Dropped Items", Callback = cleanDroppedItems})
+        optSection:Button({Name = "Remove Zombies",      Callback = removeZombies})
+        optSection:SubLabel({Text = "Removes dropped items and enemies to improve performance"})
     end
 end
 
--- Инициализация модуля
+-- Init
 function AutoAFK.Init(UI, core, notifyFunc)
     notify = notifyFunc or print
-    
-    -- Запускаем основной цикл
+
     task.spawn(mainLoop)
-    
-    -- Инициализируем UI если он передан
-    if UI then
-        initializeUI(UI)
-    end
-    
-    -- Подписываемся на изменения инвентаря
-    Inventory.ChildAdded:Connect(function()
-        scanFoodItems()
-        scanHealItems()
-    end)
-    
-    Inventory.ChildRemoved:Connect(function()
-        scanFoodItems()
-        scanHealItems()
-    end)
-    
-    Toolbar.ChildAdded:Connect(function()
-        scanFoodItems()
-        scanHealItems()
-    end)
-    
-    Toolbar.ChildRemoved:Connect(function()
-        scanFoodItems()
-        scanHealItems()
-    end)
-    
-    -- Синхронизация конфига каждую секунду
-    local synchronizationTimer = 0
-    game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
-        synchronizationTimer = synchronizationTimer + deltaTime
-        
-        if synchronizationTimer >= 1.0 then
-            synchronizationTimer = 0
-            SynchronizeConfigValues()
-        end
-    end)
-    
-    -- Первоначальное сканирование
+
+    if UI then initializeUI(UI) end
+
+    Inventory.ChildAdded:Connect(function()   scanFoodItems(); scanHealItems() end)
+    Inventory.ChildRemoved:Connect(function() scanFoodItems(); scanHealItems() end)
+    Toolbar.ChildAdded:Connect(function()     scanFoodItems(); scanHealItems() end)
+    Toolbar.ChildRemoved:Connect(function()   scanFoodItems(); scanHealItems() end)
+
     scanFoodItems()
     scanHealItems()
-    
+
     return AutoAFK
 end
 
